@@ -41,35 +41,6 @@ CUSTOMER_COUNT = 500
 
 
 # ============================================================
-# DELIVERY PRIORITY / REQUESTED DELIVERY
-# ============================================================
-
-# Synthetic warehouse business rules for the simulation.
-# The deadline is generated from order_datetime so each order
-# has an explicit delivery requirement.
-DELIVERY_PRIORITIES = [
-    "URGENT",
-    "HIGH",
-    "STANDARD",
-    "LOW",
-]
-
-DELIVERY_PRIORITY_WEIGHTS = {
-    "URGENT": 0.10,
-    "HIGH": 0.20,
-    "STANDARD": 0.55,
-    "LOW": 0.15,
-}
-
-DELIVERY_LEAD_TIME_HOURS = {
-    "URGENT": 24,
-    "HIGH": 48,
-    "STANDARD": 72,
-    "LOW": 120,
-}
-
-
-# ============================================================
 # ORDER WEIGHT DISTRIBUTION
 # ============================================================
 
@@ -136,6 +107,38 @@ ORDER_STATUS_WEIGHTS = {
     "PACKED": 0.15,
     "SHIPPED": 0.20,
 }
+
+
+# ============================================================
+# DELIVERY PRIORITY
+# ============================================================
+
+DELIVERY_PRIORITIES = [
+    "LOW",
+    "NORMAL",
+    "HIGH",
+    "URGENT",
+]
+
+DELIVERY_PRIORITY_WEIGHTS = {
+    "LOW": 0.20,
+    "NORMAL": 0.60,
+    "HIGH": 0.15,
+    "URGENT": 0.05,
+}
+
+
+def generate_delivery_priority():
+    """Generate a synthetic delivery priority."""
+
+    return random.choices(
+        DELIVERY_PRIORITIES,
+        weights=[
+            DELIVERY_PRIORITY_WEIGHTS[priority]
+            for priority in DELIVERY_PRIORITIES
+        ],
+        k=1,
+    )[0]
 
 
 # ============================================================
@@ -460,7 +463,7 @@ def build_product_index(
     """
 
     return {
-        product["article_number"]: product
+        product["product_id"]: product
         for product in products
     }
 
@@ -641,7 +644,7 @@ def build_available_product_pool(
 
     for product in products:
 
-        product_id = product["article_number"]
+        product_id = product["product_id"]
 
         if product_id not in inventory_index:
             continue
@@ -673,54 +676,6 @@ def build_available_product_pool(
 
 
 # ============================================================
-# DELIVERY PRIORITY
-# ============================================================
-
-
-def generate_delivery_priority():
-    """
-    Generate a synthetic delivery priority.
-    """
-
-    priorities = list(
-        DELIVERY_PRIORITY_WEIGHTS.keys()
-    )
-
-    weights = [
-        DELIVERY_PRIORITY_WEIGHTS[priority]
-        for priority in priorities
-    ]
-
-    return random.choices(
-        priorities,
-        weights=weights,
-        k=1,
-    )[0]
-
-
-def calculate_requested_delivery_datetime(
-    order_datetime,
-    delivery_priority,
-):
-    """
-    Calculate the requested delivery deadline.
-
-    This is a synthetic logistics rule for the warehouse simulation.
-    The deadline is derived from the order timestamp and the
-    priority-specific lead time.
-    """
-
-    lead_time_hours = DELIVERY_LEAD_TIME_HOURS[
-        delivery_priority
-    ]
-
-    return (
-        order_datetime
-        + timedelta(hours=lead_time_hours)
-    )
-
-
-# ============================================================
 # ORDER HEADER
 # ============================================================
 
@@ -742,23 +697,6 @@ def generate_order(
         generate_order_datetime()
     )
 
-    delivery_priority = (
-        generate_delivery_priority()
-    )
-
-    requested_delivery_datetime = (
-        calculate_requested_delivery_datetime(
-            order_datetime=order_datetime,
-            delivery_priority=delivery_priority,
-        )
-    )
-
-    delivery_lead_time_hours = (
-        DELIVERY_LEAD_TIME_HOURS[
-            delivery_priority
-        ]
-    )
-
     return {
         "order_id": order_id,
         "customer_id": customer[
@@ -769,22 +707,22 @@ def generate_order(
                 timespec="seconds"
             )
         ),
-        "requested_delivery_datetime": (
-            requested_delivery_datetime.isoformat(
-                timespec="seconds"
-            )
-        ),
-        "delivery_priority": (
-            delivery_priority
-        ),
-        "delivery_lead_time_hours": (
-            delivery_lead_time_hours
-        ),
         "order_status": (
             generate_order_status()
         ),
+        "delivery_priority": (
+            generate_delivery_priority()
+        ),
         "order_weight_class": (
             weight_class
+        ),
+        "requested_delivery_datetime": (
+            (
+                order_datetime
+                + timedelta(
+                    hours=random.randint(48, 120)
+                )
+            ).isoformat(timespec="seconds")
         ),
         "total_items": 0,
         "total_weight_kg": 0.0,
@@ -902,7 +840,7 @@ def generate_order_items(
             p
             for p in available_products
             if inventory_index.get(
-                p["article_number"],
+                p["product_id"],
                 0,
             ) > 0
         ]
@@ -916,7 +854,7 @@ def generate_order_items(
         )
 
         product_id = (
-            product["article_number"]
+            product["product_id"]
         )
 
         if product_id in used_products:
@@ -1258,14 +1196,6 @@ def validate_orders(
         )
 
         assert (
-            order["order_weight_class"]
-            in ORDER_WEIGHT_CLASSES
-        ), (
-            f"Invalid weight class: "
-            f"{order['order_weight_class']}"
-        )
-
-        assert (
             order["delivery_priority"]
             in DELIVERY_PRIORITIES
         ), (
@@ -1274,43 +1204,11 @@ def validate_orders(
         )
 
         assert (
-            int(order["delivery_lead_time_hours"])
-            == DELIVERY_LEAD_TIME_HOURS[
-                order["delivery_priority"]
-            ]
+            order["order_weight_class"]
+            in ORDER_WEIGHT_CLASSES
         ), (
-            f"Invalid delivery lead time for "
-            f"{order['order_id']}"
-        )
-
-        order_datetime = datetime.fromisoformat(
-            order["order_datetime"]
-        )
-
-        requested_delivery_datetime = (
-            datetime.fromisoformat(
-                order["requested_delivery_datetime"]
-            )
-        )
-
-        assert (
-            requested_delivery_datetime > order_datetime
-        ), (
-            f"Requested delivery must be after "
-            f"order datetime for {order['order_id']}"
-        )
-
-        actual_lead_time_hours = (
-            requested_delivery_datetime
-            - order_datetime
-        ).total_seconds() / 3600
-
-        assert abs(
-            actual_lead_time_hours
-            - int(order["delivery_lead_time_hours"])
-        ) < 0.01, (
-            f"Delivery lead time mismatch for "
-            f"{order['order_id']}"
+            f"Invalid weight class: "
+            f"{order['order_weight_class']}"
         )
 
         assert (
@@ -1333,6 +1231,18 @@ def validate_orders(
         ), (
             f"Invalid total items "
             f"for {order['order_id']}"
+        )
+
+        order_datetime = datetime.fromisoformat(
+            order["order_datetime"]
+        )
+        requested_delivery_datetime = datetime.fromisoformat(
+            order["requested_delivery_datetime"]
+        )
+
+        assert requested_delivery_datetime > order_datetime, (
+            f"Requested delivery datetime must be after "
+            f"order datetime for {order['order_id']}"
         )
 
     # --------------------------------------------------------
@@ -1682,43 +1592,6 @@ def print_weight_summary(
 
 
 # ============================================================
-# DELIVERY PRIORITY SUMMARY
-# ============================================================
-
-
-def print_delivery_priority_summary(
-    orders,
-):
-    """
-    Print distribution of requested delivery priorities.
-    """
-
-    counts = {
-        priority: 0
-        for priority in DELIVERY_PRIORITIES
-    }
-
-    for order in orders:
-        counts[
-            order["delivery_priority"]
-        ] += 1
-
-    print()
-    print("Delivery Priority Distribution")
-    print("==============================")
-
-    for priority in DELIVERY_PRIORITIES:
-        count = counts[priority]
-
-        print(
-            f"{priority:<12} "
-            f"{count:>6,} "
-            f"({count / len(orders) * 100:.1f}%) "
-            f"- {DELIVERY_LEAD_TIME_HOURS[priority]}h SLA"
-        )
-
-
-# ============================================================
 # ORDER SUMMARY
 # ============================================================
 
@@ -1854,11 +1727,10 @@ def export_orders(
         "order_id",
         "customer_id",
         "order_datetime",
-        "requested_delivery_datetime",
-        "delivery_priority",
-        "delivery_lead_time_hours",
         "order_status",
+        "delivery_priority",
         "order_weight_class",
+        "requested_delivery_datetime",
         "total_items",
         "total_weight_kg",
     ]
@@ -2047,10 +1919,6 @@ def main():
         order_items,
     )
 
-    print_delivery_priority_summary(
-        orders
-    )
-
     print_weight_summary(
         orders
     )
@@ -2062,6 +1930,7 @@ def main():
     export_order_items(
         order_items
     )
+
 
 # ============================================================
 # SCRIPT ENTRY POINT

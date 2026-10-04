@@ -1,6 +1,22 @@
+"""
+Warehouse Control Tower - Inventory Generator
+
+Generates synthetic warehouse inventory from:
+    product_master.csv
+    locations.csv
+
+Important:
+    inventory.product_id is a foreign-key-style reference to
+    product_master.product_id.
+
+    article_number remains the business/article identifier in
+    the product master and is not used as the inventory FK.
+"""
+
 from pathlib import Path
 import csv
 import random
+from datetime import datetime
 
 
 # ============================================================
@@ -8,27 +24,11 @@ import random
 # ============================================================
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
 
-PROCESSED_DIR = (
-    PROJECT_ROOT
-    / "data"
-    / "processed"
-)
-
-PRODUCT_FILE = (
-    PROCESSED_DIR
-    / "product_master.csv"
-)
-
-LOCATION_FILE = (
-    PROCESSED_DIR
-    / "locations.csv"
-)
-
-OUTPUT_FILE = (
-    PROCESSED_DIR
-    / "inventory.csv"
-)
+PRODUCT_FILE = PROCESSED_DIR / "product_master.csv"
+LOCATIONS_FILE = PROCESSED_DIR / "locations.csv"
+INVENTORY_FILE = PROCESSED_DIR / "inventory.csv"
 
 
 # ============================================================
@@ -36,49 +36,25 @@ OUTPUT_FILE = (
 # ============================================================
 
 RANDOM_SEED = 42
+random.seed(RANDOM_SEED)
 
 TARGET_OCCUPANCY = 0.70
 
-MIN_PALLET_QUANTITY = 10
-MAX_PALLET_QUANTITY = 500
+INVENTORY_ID_START = 1
 
-MIN_BOX_QUANTITY = 1
-MAX_BOX_QUANTITY = 100
+STATUS = "AVAILABLE"
 
-MAX_PRODUCTS = None
-# None = use all available products
-
-
-# ============================================================
-# STORAGE RULES
-# ============================================================
-
-PALLET_STORAGE_TYPES = {
+STORAGE_TYPES = {
     "PALLET_STORAGE",
-}
-
-BOX_STORAGE_TYPES = {
     "BOX_STORAGE",
 }
-
-
-# ============================================================
-# RANDOM GENERATOR
-# ============================================================
-
-random.seed(RANDOM_SEED)
 
 
 # ============================================================
 # CSV HELPERS
 # ============================================================
 
-
 def read_csv(file_path):
-    """
-    Read a CSV file and return a list of dictionaries.
-    """
-
     if not file_path.exists():
         raise FileNotFoundError(
             f"Required file not found: {file_path}"
@@ -89,84 +65,60 @@ def read_csv(file_path):
         newline="",
         encoding="utf-8-sig",
     ) as file:
-
-        reader = csv.DictReader(file)
-
-        return list(reader)
+        return list(csv.DictReader(file))
 
 
 # ============================================================
-# PRODUCT LOADING
+# LOAD PRODUCTS
 # ============================================================
-
 
 def load_products():
-    """
-    Load product master data.
-
-    Required field:
-        article_number
-    """
-
-    products = read_csv(
-        PRODUCT_FILE
-    )
+    products = read_csv(PRODUCT_FILE)
 
     if not products:
         raise ValueError(
             "Product master is empty."
         )
 
-    required_fields = {
+    required = {
+        "product_id",
         "article_number",
     }
 
-    missing_fields = (
-        required_fields
-        - set(products[0].keys())
-    )
+    missing = required - set(products[0].keys())
 
-    if missing_fields:
+    if missing:
         raise ValueError(
-            "Product master is missing fields: "
-            f"{missing_fields}"
+            f"Product master missing fields: {missing}"
         )
 
-    # Remove products without an article number.
-    products = [
-        product
-        for product in products
-        if product["article_number"]
+    product_ids = [
+        row["product_id"].strip()
+        for row in products
+        if row["product_id"].strip()
     ]
 
-    if MAX_PRODUCTS is not None:
-        products = products[
-            :MAX_PRODUCTS
-        ]
+    if len(product_ids) != len(set(product_ids)):
+        raise ValueError(
+            "Duplicate product_id values in product master."
+        )
 
     return products
 
 
 # ============================================================
-# LOCATION LOADING
+# LOAD LOCATIONS
 # ============================================================
 
-
 def load_locations():
-    """
-    Load generated warehouse locations.
-    """
-
-    locations = read_csv(
-        LOCATION_FILE
-    )
+    locations = read_csv(LOCATIONS_FILE)
 
     if not locations:
         raise ValueError(
-            "Location file is empty."
+            "Locations file is empty."
         )
 
-    required_fields = {
+    required = {
         "location_id",
         "hall_id",
         "zone_nr",
@@ -177,190 +129,70 @@ def load_locations():
         "side",
     }
 
-    missing_fields = (
-        required_fields
-        - set(locations[0].keys())
-    )
+    missing = required - set(locations[0].keys())
 
-    if missing_fields:
+    if missing:
         raise ValueError(
-            "Location file is missing fields: "
-            f"{missing_fields}"
+            f"Locations missing fields: {missing}"
         )
+
+    for row in locations:
+        if row["storage_type"] not in STORAGE_TYPES:
+            raise ValueError(
+                f"Invalid storage_type: "
+                f"{row['storage_type']}"
+            )
 
     return locations
 
 
 # ============================================================
-# PRODUCT SELECTION
+# INVENTORY QUANTITY
 # ============================================================
 
-
-def select_products(
-    products,
-    number_of_products,
-):
+def generate_quantity(storage_type):
     """
-    Select products for warehouse inventory.
+    Generate synthetic stock quantity.
 
-    Products are selected randomly but reproducibly.
+    Pallet storage carries larger quantities.
+    Box storage carries smaller picking quantities.
     """
 
-    if number_of_products > len(products):
-        number_of_products = len(products)
+    if storage_type == "PALLET_STORAGE":
+        return random.randint(50, 500)
 
-    return random.sample(
-        products,
-        number_of_products,
-    )
-
-
-# ============================================================
-# QUANTITY GENERATORS
-# ============================================================
-
-
-def generate_pallet_quantity():
-    """
-    Generate inventory quantity for pallet storage.
-    """
-
-    return random.randint(
-        MIN_PALLET_QUANTITY,
-        MAX_PALLET_QUANTITY,
-    )
-
-
-def generate_box_quantity():
-    """
-    Generate inventory quantity for box storage.
-    """
-
-    return random.randint(
-        MIN_BOX_QUANTITY,
-        MAX_BOX_QUANTITY,
-    )
+    return random.randint(1, 100)
 
 
 # ============================================================
 # CONTAINER TYPE
 # ============================================================
 
-
-def get_container_type(
-    storage_type,
-):
+def generate_container_type(storage_type):
     """
-    Determine the physical container type
-    based on storage type.
+    Map storage type to the physical inventory container.
+
+    PALLET_STORAGE -> PALLET
+    BOX_STORAGE    -> BOX
     """
 
-    if storage_type in PALLET_STORAGE_TYPES:
+    if storage_type == "PALLET_STORAGE":
         return "PALLET"
 
-    if storage_type in BOX_STORAGE_TYPES:
-        return "BOX"
-
-    raise ValueError(
-        f"Unsupported storage type: "
-        f"{storage_type}"
-    )
+    return "BOX"
 
 
 # ============================================================
-# INVENTORY RECORD
+# CONTAINER ID
 # ============================================================
 
-
-def create_inventory_record(
-    product,
-    location,
-    inventory_id,
-    container_number,
+def generate_container_id(
+    container_type,
+    inventory_number,
 ):
-    """
-    Create one inventory record.
-
-    One inventory record represents one product
-    stored at one warehouse location.
-    """
-
-    storage_type = location[
-        "storage_type"
-    ]
-
-    container_type = get_container_type(
-        storage_type
-    )
-
-    if container_type == "PALLET":
-        quantity = generate_pallet_quantity()
-
-        container_id = (
-            f"PALLET-{container_number:06d}"
-        )
-
-    else:
-        quantity = generate_box_quantity()
-
-        container_id = (
-            f"BOX-{container_number:06d}"
-        )
-
-    return {
-        "inventory_id": (
-            f"INV-{inventory_id:08d}"
-        ),
-        "product_id": product[
-            "article_number"
-        ],
-        "location_id": location[
-            "location_id"
-        ],
-        "hall_id": location[
-            "hall_id"
-        ],
-        "zone_nr": location[
-            "zone_nr"
-        ],
-        "storage_type": storage_type,
-        "container_type": container_type,
-        "container_id": container_id,
-        "quantity": quantity,
-        "unit": "PCS",
-        "status": "AVAILABLE",
-    }
-
-
-# ============================================================
-# LOCATION COMPATIBILITY
-# ============================================================
-
-
-def get_eligible_locations(
-    locations,
-):
-    """
-    Split locations by physical storage type.
-    """
-
-    pallet_locations = [
-        location
-        for location in locations
-        if location["storage_type"]
-        in PALLET_STORAGE_TYPES
-    ]
-
-    box_locations = [
-        location
-        for location in locations
-        if location["storage_type"]
-        in BOX_STORAGE_TYPES
-    ]
-
     return (
-        pallet_locations,
-        box_locations,
+        f"{container_type}-"
+        f"INV-{inventory_number:06d}"
     )
 
 
@@ -368,137 +200,150 @@ def get_eligible_locations(
 # INVENTORY GENERATION
 # ============================================================
 
-
 def generate_inventory(
     products,
     locations,
 ):
     """
-    Generate warehouse inventory.
+    Generate one inventory record per occupied location.
 
-    The generator:
+    The occupied locations are selected according to the
+    configured warehouse occupancy target.
 
-        1. selects products
-        2. selects occupied locations
-        3. creates one inventory record
-           per product/location
-        4. assigns a physical container
-        5. generates a quantity
+    Each occupied location receives one product.
 
-    The current model intentionally keeps
-    inventory generation simple.
+    Product assignment uses product_master.product_id so that
+    inventory.product_id is a valid reference to the product
+    master.
 
-    Detailed pallet splitting, box assignment,
-    cart picking and picking events will be
-    handled by later generators.
+    The same product may be placed at multiple locations in
+    future model extensions; the current generator keeps the
+    initial dataset simple and deterministic by assigning
+    unique products to occupied locations.
     """
 
-    (
-        pallet_locations,
-        box_locations,
-    ) = get_eligible_locations(
-        locations
+    target_count = int(
+        len(locations) * TARGET_OCCUPANCY
     )
 
-    if not pallet_locations:
+    if target_count > len(products):
         raise ValueError(
-            "No pallet storage locations found."
+            "Not enough products to assign unique products "
+            "to all occupied locations."
         )
 
-    if not box_locations:
-        raise ValueError(
-            "No box storage locations found."
-        )
+    pallet_locations = [
+        row
+        for row in locations
+        if row["storage_type"] == "PALLET_STORAGE"
+    ]
 
-    total_locations = len(locations)
+    box_locations = [
+        row
+        for row in locations
+        if row["storage_type"] == "BOX_STORAGE"
+    ]
 
-    target_locations = int(
-        total_locations
-        * TARGET_OCCUPANCY
-    )
-
-    if target_locations <= 0:
-        raise ValueError(
-            "Target inventory occupancy "
-            "must be greater than zero."
-        )
-
-    # --------------------------------------------------------
-    # We use separate pools for pallet and box storage.
-    # This prevents products from being assigned to an
-    # incompatible physical storage type.
-    # --------------------------------------------------------
-
-    pallet_target = int(
-        target_locations
-        * (
-            len(pallet_locations)
-            / total_locations
-        )
-    )
-
-    box_target = (
-        target_locations
-        - pallet_target
-    )
-
+    # Select occupied locations independently by storage type
+    # so the inventory reflects the physical warehouse mix.
     pallet_target = min(
-        pallet_target,
         len(pallet_locations),
+        round(
+            target_count
+            * len(pallet_locations)
+            / len(locations)
+        ),
     )
 
-    box_target = min(
-        box_target,
-        len(box_locations),
-    )
+    box_target = target_count - pallet_target
 
-    occupied_pallet_locations = random.sample(
+    if box_target > len(box_locations):
+        box_target = len(box_locations)
+        pallet_target = target_count - box_target
+
+    if pallet_target > len(pallet_locations):
+        pallet_target = len(pallet_locations)
+        box_target = target_count - pallet_target
+
+    selected_pallet_locations = random.sample(
         pallet_locations,
         pallet_target,
     )
 
-    occupied_box_locations = random.sample(
+    selected_box_locations = random.sample(
         box_locations,
         box_target,
     )
 
-    occupied_locations = (
-        occupied_pallet_locations
-        + occupied_box_locations
+    selected_locations = (
+        selected_pallet_locations
+        + selected_box_locations
     )
 
-    # Shuffle so inventory is not grouped
-    # by storage type in the output.
-    random.shuffle(
-        occupied_locations
-    )
+    random.shuffle(selected_locations)
 
-    selected_products = select_products(
-        products,
-        len(occupied_locations),
+    # Use product_id directly as the FK.
+    product_pool = [
+        row["product_id"].strip()
+        for row in products
+        if row["product_id"].strip()
+    ]
+
+    selected_products = random.sample(
+        product_pool,
+        len(selected_locations),
     )
 
     inventory = []
 
-    for inventory_number, (
-        product,
-        location,
-    ) in enumerate(
+    for number, (location, product_id) in enumerate(
         zip(
+            selected_locations,
             selected_products,
-            occupied_locations,
         ),
-        start=1,
+        start=INVENTORY_ID_START,
     ):
+        storage_type = location["storage_type"]
 
-        record = create_inventory_record(
-            product=product,
-            location=location,
-            inventory_id=inventory_number,
-            container_number=inventory_number,
+        container_type = generate_container_type(
+            storage_type
         )
 
-        inventory.append(record)
+        inventory.append(
+            {
+                "inventory_id": (
+                    f"INV-{number:06d}"
+                ),
+                "product_id": product_id,
+                "location_id": location[
+                    "location_id"
+                ],
+                "hall_id": location[
+                    "hall_id"
+                ],
+                "zone_nr": location[
+                    "zone_nr"
+                ],
+                "storage_type": storage_type,
+                "picking_method": location[
+                    "picking_method"
+                ],
+                "quantity": generate_quantity(
+                    storage_type
+                ),
+                "container_type": container_type,
+                "container_id": generate_container_id(
+                    container_type,
+                    number,
+                ),
+                "status": STATUS,
+                "last_updated": (
+                    datetime.now().isoformat(
+                        timespec="seconds"
+                    )
+                ),
+            }
+        )
 
     return inventory
 
@@ -507,149 +352,69 @@ def generate_inventory(
 # VALIDATION
 # ============================================================
 
-
 def validate_inventory(
     inventory,
-    locations,
     products,
+    locations,
 ):
-    """
-    Validate generated inventory.
-
-    Checks:
-
-        - inventory IDs are unique
-        - product IDs exist
-        - location IDs exist
-        - one product/location combination
-        - storage types are valid
-        - container types match storage
-        - quantities are positive
-    """
-
-    if not inventory:
-        raise ValueError(
-            "Inventory is empty."
-        )
-
     product_ids = {
-        product["article_number"]
-        for product in products
+        row["product_id"]
+        for row in products
     }
 
-    location_lookup = {
-        location["location_id"]: location
-        for location in locations
+    location_ids = {
+        row["location_id"]
+        for row in locations
     }
 
     inventory_ids = [
-        record["inventory_id"]
-        for record in inventory
+        row["inventory_id"]
+        for row in inventory
     ]
 
-    assert len(
-        inventory_ids
-    ) == len(
+    assert len(inventory_ids) == len(
         set(inventory_ids)
+    ), "Duplicate inventory_id values."
+
+    occupied_locations = [
+        row["location_id"]
+        for row in inventory
+    ]
+
+    assert len(occupied_locations) == len(
+        set(occupied_locations)
     ), (
-        "Duplicate inventory_id values detected."
+        "Duplicate occupied locations found. "
+        "A location may contain only one inventory "
+        "record in this initial model."
     )
 
-    product_location_pairs = set()
-
-    for record in inventory:
-
-        # ----------------------------------------------------
-        # Product validation
-        # ----------------------------------------------------
-
-        assert record["product_id"] in product_ids, (
+    for row in inventory:
+        assert row["product_id"] in product_ids, (
             f"Unknown product_id: "
-            f"{record['product_id']}"
+            f"{row['product_id']}"
         )
 
-        # ----------------------------------------------------
-        # Location validation
-        # ----------------------------------------------------
-
-        location_id = record[
-            "location_id"
-        ]
-
-        assert location_id in location_lookup, (
+        assert row["location_id"] in location_ids, (
             f"Unknown location_id: "
-            f"{location_id}"
+            f"{row['location_id']}"
         )
 
-        location = location_lookup[
-            location_id
-        ]
-
-        # ----------------------------------------------------
-        # Product / location uniqueness
-        # ----------------------------------------------------
-
-        pair = (
-            record["product_id"],
-            record["location_id"],
+        quantity = int(
+            float(row["quantity"])
         )
 
-        assert pair not in product_location_pairs, (
-            "Duplicate product/location "
-            f"combination: {pair}"
-        )
+        assert quantity > 0
 
-        product_location_pairs.add(
-            pair
-        )
+        assert row["status"] == STATUS
 
-        # ----------------------------------------------------
-        # Storage type
-        # ----------------------------------------------------
+        if row["storage_type"] == "PALLET_STORAGE":
+            assert row["container_type"] == "PALLET"
 
-        assert (
-            record["storage_type"]
-            == location["storage_type"]
-        ), (
-            f"Storage type mismatch for "
-            f"{record['inventory_id']}"
-        )
+        elif row["storage_type"] == "BOX_STORAGE":
+            assert row["container_type"] == "BOX"
 
-        # ----------------------------------------------------
-        # Container type
-        # ----------------------------------------------------
-
-        expected_container_type = (
-            get_container_type(
-                location["storage_type"]
-            )
-        )
-
-        assert (
-            record["container_type"]
-            == expected_container_type
-        ), (
-            f"Container type mismatch for "
-            f"{record['inventory_id']}"
-        )
-
-        # ----------------------------------------------------
-        # Quantity
-        # ----------------------------------------------------
-
-        assert record["quantity"] > 0, (
-            f"Invalid quantity in "
-            f"{record['inventory_id']}"
-        )
-
-        # ----------------------------------------------------
-        # Status
-        # ----------------------------------------------------
-
-        assert record["status"] == "AVAILABLE", (
-            f"Invalid inventory status in "
-            f"{record['inventory_id']}"
-        )
+    assert len(inventory) > 0
 
     print(
         "Inventory validation passed."
@@ -660,35 +425,24 @@ def validate_inventory(
 # SUMMARY
 # ============================================================
 
-
-def print_inventory_summary(
+def print_summary(
     inventory,
 ):
-    """
-    Print inventory summary.
-    """
-
-    total_records = len(
-        inventory
-    )
-
     total_quantity = sum(
-        int(record["quantity"])
-        for record in inventory
+        int(
+            float(row["quantity"])
+        )
+        for row in inventory
     )
 
-    pallet_records = sum(
-        1
-        for record in inventory
-        if record["container_type"]
-        == "PALLET"
+    pallet_count = sum(
+        row["container_type"] == "PALLET"
+        for row in inventory
     )
 
-    box_records = sum(
-        1
-        for record in inventory
-        if record["container_type"]
-        == "BOX"
+    box_count = sum(
+        row["container_type"] == "BOX"
+        for row in inventory
     )
 
     print()
@@ -696,19 +450,23 @@ def print_inventory_summary(
     print("===========================")
 
     print(
-        f"Inventory records: {total_records:,}"
+        f"Inventory records:     "
+        f"{len(inventory):,}"
     )
 
     print(
-        f"Total quantity:    {total_quantity:,}"
+        f"Total quantity:        "
+        f"{total_quantity:,}"
     )
 
     print(
-        f"Pallet inventory:  {pallet_records:,}"
+        f"Pallet inventory:      "
+        f"{pallet_count:,}"
     )
 
     print(
-        f"Box inventory:     {box_records:,}"
+        f"Box inventory:         "
+        f"{box_count:,}"
     )
 
 
@@ -716,21 +474,10 @@ def print_inventory_summary(
 # EXPORT
 # ============================================================
 
-
 def export_inventory(
     inventory,
-    output_file=OUTPUT_FILE,
 ):
-    """
-    Export inventory to CSV.
-    """
-
-    if not inventory:
-        raise ValueError(
-            "No inventory available for export."
-        )
-
-    output_file.parent.mkdir(
+    PROCESSED_DIR.mkdir(
         parents=True,
         exist_ok=True,
     )
@@ -742,19 +489,19 @@ def export_inventory(
         "hall_id",
         "zone_nr",
         "storage_type",
+        "picking_method",
+        "quantity",
         "container_type",
         "container_id",
-        "quantity",
-        "unit",
         "status",
+        "last_updated",
     ]
 
-    with output_file.open(
+    with INVENTORY_FILE.open(
         "w",
         newline="",
         encoding="utf-8",
     ) as file:
-
         writer = csv.DictWriter(
             file,
             fieldnames=fieldnames,
@@ -766,22 +513,15 @@ def export_inventory(
         )
 
     print()
-    print(
-        "Inventory export complete:"
-    )
-
-    print(
-        output_file
-    )
+    print("Inventory export complete:")
+    print(INVENTORY_FILE)
 
 
 # ============================================================
 # MAIN
 # ============================================================
 
-
 def main():
-
     print()
     print("Warehouse Inventory Generator")
     print("=============================")
@@ -792,7 +532,7 @@ def main():
     products = load_products()
 
     print(
-        f"Products loaded: "
+        f"Products loaded:       "
         f"{len(products):,}"
     )
 
@@ -802,7 +542,7 @@ def main():
     locations = load_locations()
 
     print(
-        f"Locations loaded: "
+        f"Locations loaded:      "
         f"{len(locations):,}"
     )
 
@@ -815,7 +555,7 @@ def main():
     )
 
     print(
-        f"Inventory records generated: "
+        f"Inventory generated:   "
         f"{len(inventory):,}"
     )
 
@@ -824,22 +564,17 @@ def main():
 
     validate_inventory(
         inventory=inventory,
-        locations=locations,
         products=products,
+        locations=locations,
     )
 
-    print_inventory_summary(
+    print_summary(
         inventory
     )
 
     export_inventory(
         inventory
     )
-
-
-# ============================================================
-# SCRIPT ENTRY POINT
-# ============================================================
 
 
 if __name__ == "__main__":

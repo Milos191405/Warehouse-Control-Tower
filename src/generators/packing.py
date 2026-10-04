@@ -51,6 +51,11 @@ PACKING_STATUSES = [
     "PACKED",
 ]
 
+# Synthetic operational timeline rules.
+PACKING_START_DELAY_MINUTES = (5, 30)
+PACKING_DURATION_MINUTES = (3, 20)
+PALLET_EXTRA_DURATION_MINUTES = (5, 20)
+
 
 # ============================================================
 # CSV HELPERS
@@ -99,6 +104,7 @@ def load_orders():
     required = {
         "order_id",
         "order_status",
+        "requested_delivery_datetime",
         "total_items",
         "total_weight_kg",
     }
@@ -521,27 +527,36 @@ def generate_packing_records(
 
         container_scan = True
 
-        # Synthetic operational timestamps.
-        # These are intentionally generated here because the current
-        # picking output does not provide a dedicated packing timestamp.
-        base_time = datetime.now()
+        # Packing starts after the latest pick for the order.
+        # This keeps the operational timeline chronological:
+        # order -> picking -> packing.
+        pick_datetimes = [
+            datetime.fromisoformat(
+                pick["pick_datetime"]
+            )
+            for pick in picks
+        ]
+
+        latest_pick_datetime = max(
+            pick_datetimes
+        )
 
         packing_started_at = (
-            base_time
+            latest_pick_datetime
             + timedelta(
-                minutes=random.randint(1, 30)
+                minutes=random.randint(
+                    *PACKING_START_DELAY_MINUTES
+                )
             )
         )
 
         packing_duration_minutes = random.randint(
-            3,
-            20,
+            *PACKING_DURATION_MINUTES
         )
 
         if packing_type == "PALLET_SHIPMENT":
             packing_duration_minutes += random.randint(
-                5,
-                20,
+                *PALLET_EXTRA_DURATION_MINUTES
             )
 
         packing_completed_at = (
@@ -752,6 +767,50 @@ def validate_packing(
         assert row[
             "packing_status"
         ] == "PACKED"
+
+        packing_started_at = datetime.fromisoformat(
+            row["packing_started_at"]
+        )
+
+        packing_completed_at = datetime.fromisoformat(
+            row["packing_completed_at"]
+        )
+
+        assert packing_completed_at > packing_started_at, (
+            f"Invalid packing timestamps for "
+            f"{row['order_id']}"
+        )
+
+        requested_delivery_datetime = datetime.fromisoformat(
+            next(
+                order["requested_delivery_datetime"]
+                for order in orders
+                if order["order_id"] == row["order_id"]
+            )
+        )
+
+        assert packing_completed_at < requested_delivery_datetime, (
+            f"Packing finishes after delivery deadline "
+            f"for {row['order_id']}"
+        )
+
+        order_picks = [
+            pick
+            for pick in picking
+            if pick["order_id"] == row["order_id"]
+        ]
+
+        latest_pick_datetime = max(
+            datetime.fromisoformat(
+                pick["pick_datetime"]
+            )
+            for pick in order_picks
+        )
+
+        assert packing_started_at >= latest_pick_datetime, (
+            f"Packing starts before picking is complete for "
+            f"{row['order_id']}"
+        )
 
         assert row[
             "container_id"

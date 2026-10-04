@@ -45,6 +45,15 @@ CONTAINER_TYPES = [
     "PALLET",
 ]
 
+# Synthetic operational timeline rules.
+# Picking starts after order creation and each subsequent pick for
+# the same order advances the operational clock.
+PICKING_START_DELAY_MINUTES = (15, 90)
+PICKING_STEP_MINUTES = (5, 20)
+
+# Keep the generated timeline reproducible.
+# Each order gets its own operational clock, starting after order creation.
+
 
 # ============================================================
 # CSV HELPERS
@@ -73,6 +82,7 @@ def load_orders():
 
     required = {
         "order_id",
+        "order_datetime",
         "order_status",
     }
 
@@ -188,6 +198,22 @@ def build_order_index(orders):
 
 
 # ============================================================
+# TIMELINE HELPERS
+# ============================================================
+
+def parse_order_datetime(order):
+    try:
+        return datetime.fromisoformat(
+            order["order_datetime"]
+        )
+    except (KeyError, ValueError) as exc:
+        raise ValueError(
+            f"Invalid order_datetime for "
+            f"{order.get('order_id', 'UNKNOWN')}"
+        ) from exc
+
+
+# ============================================================
 # CONTAINER LOGIC
 # ============================================================
 
@@ -299,6 +325,7 @@ def generate_picking(
     order_items,
     inventory_index,
     location_index,
+    order_index,
 ):
     """
     Generate one or more picking records per order item.
@@ -310,6 +337,10 @@ def generate_picking(
     picking_records = []
 
     pick_number = PICK_ID_START
+
+    # Operational clock per order. This keeps every pick chronologically
+    # connected to the order that created the work.
+    order_pick_clock = {}
 
     # Copy available inventory quantities so that picks
     # consume stock during the simulation.
@@ -431,15 +462,35 @@ def generate_picking(
 
             pick_number += 1
 
-            pick_datetime = (
-                datetime.now()
-                - timedelta(
-                    minutes=random.randint(
-                        0,
-                        60 * 24 * 30,
+            order = order_index.get(
+                item["order_id"]
+            )
+
+            if order is None:
+                raise ValueError(
+                    f"Order {item['order_id']} "
+                    "not found for picking."
+                )
+
+            if item["order_id"] not in order_pick_clock:
+                order_pick_clock[item["order_id"]] = (
+                    parse_order_datetime(order)
+                    + timedelta(
+                        minutes=random.randint(
+                            *PICKING_START_DELAY_MINUTES
+                        )
                     )
                 )
-            )
+            else:
+                order_pick_clock[item["order_id"]] += timedelta(
+                    minutes=random.randint(
+                        *PICKING_STEP_MINUTES
+                    )
+                )
+
+            pick_datetime = order_pick_clock[
+                item["order_id"]
+            ]
 
             picking_records.append(
                 {
@@ -501,6 +552,7 @@ def generate_picking(
 
 def validate_picking(
     picking_records,
+    orders,
     order_items,
     inventory,
     location_index,
@@ -508,6 +560,11 @@ def validate_picking(
     order_item_lookup = {
         row["order_item_id"]: row
         for row in order_items
+    }
+
+    order_lookup = {
+        row["order_id"]: row
+        for row in orders
     }
 
     inventory_ids = {
@@ -525,6 +582,7 @@ def validate_picking(
     ), "Duplicate picking_id values."
 
     picked_by_item = {}
+    last_pick_datetime_by_order = {}
 
     for pick in picking_records:
 
@@ -584,6 +642,45 @@ def validate_picking(
             pick["container_scan"]
             is True
         )
+
+        try:
+            pick_datetime = datetime.fromisoformat(
+                pick["pick_datetime"]
+            )
+        except (KeyError, ValueError) as exc:
+            raise ValueError(
+                f"Invalid pick_datetime for "
+                f"{pick['picking_id']}"
+            ) from exc
+
+        order = order_lookup.get(
+            pick["order_id"]
+        )
+
+        assert order is not None, (
+            f"Unknown order_id: {pick['order_id']}"
+        )
+
+        order_datetime = datetime.fromisoformat(
+            order["order_datetime"]
+        )
+
+        assert pick_datetime >= order_datetime, (
+            f"Pick occurs before order for "
+            f"{pick['picking_id']}"
+        )
+
+        previous_pick = last_pick_datetime_by_order.get(
+            pick["order_id"]
+        )
+
+        if previous_pick is not None:
+            assert pick_datetime > previous_pick, (
+                f"Picking timestamps are not strictly chronological "
+                f"for order {pick['order_id']}"
+            )
+
+        last_pick_datetime_by_order[pick["order_id"]] = pick_datetime
 
         order_item_id = pick[
             "order_item_id"
@@ -830,6 +927,10 @@ def main():
     print()
     print("Building indexes...")
 
+    order_index = build_order_index(
+        orders
+    )
+
     inventory_index = (
         build_inventory_index(
             inventory
@@ -854,6 +955,7 @@ def main():
         order_items=order_items,
         inventory_index=inventory_index,
         location_index=location_index,
+        order_index=order_index,
     )
 
     print(
@@ -866,6 +968,7 @@ def main():
 
     validate_picking(
         picking_records=picking_records,
+        orders=orders,
         order_items=order_items,
         inventory=inventory,
         location_index=location_index,
