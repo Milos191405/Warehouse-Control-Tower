@@ -211,7 +211,7 @@ Potential future features:
 
 ### Currently Working On
 
-- [ ] Location generator
+- [x] Location generator
 - [ ] Location master
 - [ ] Warehouse data model
 

@@ -688,8 +688,8 @@ rather than being completely random.
 
 ### In Progress
 
-- [ ] Location generator
-- [ ] Location master
+- [x] Location generator
+- [x] Location master
 - [ ] Warehouse data model
 
 ### Planned

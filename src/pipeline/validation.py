@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
 
 PRODUCTS_FILE = PROCESSED_DIR / "product_master.csv"
