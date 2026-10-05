@@ -1,6 +1,7 @@
 from pathlib import Path
 import csv
 import random
+import hashlib
 from datetime import datetime, timedelta
 
 
@@ -25,7 +26,7 @@ ORDER_ITEMS_FILE = PROCESSED_DIR / "order_items.csv"
 
 RANDOM_SEED = 42
 
-NUMBER_OF_ORDERS = 25_000
+NUMBER_OF_ORDERS = 50_000
 
 MIN_ITEMS_PER_ORDER = 1
 MAX_ITEMS_PER_ORDER = 8
@@ -33,11 +34,42 @@ MAX_ITEMS_PER_ORDER = 8
 MIN_QUANTITY_PER_ITEM = 1
 MAX_QUANTITY_PER_ITEM = 100
 
-DAYS_OF_HISTORY = 180
+DAYS_OF_HISTORY = 365
 
 ORDER_ID_START = 1
 
 CUSTOMER_COUNT = 500
+
+
+# ============================================================
+# SEASONALITY
+# ============================================================
+
+MONTH_DEMAND_MULTIPLIERS = {
+    1: 0.90,
+    2: 0.95,
+    3: 1.00,
+    4: 1.00,
+    5: 1.00,
+    6: 0.95,
+    7: 0.80,
+    8: 0.80,
+    9: 1.00,
+    10: 1.05,
+    11: 1.25,
+    12: 1.40,
+}
+
+
+WEEKDAY_DEMAND_MULTIPLIERS = {
+    0: 1.00,  # Monday
+    1: 1.00,  # Tuesday
+    2: 1.00,  # Wednesday
+    3: 1.00,  # Thursday
+    4: 0.95,  # Friday
+    5: 0.35,  # Saturday
+    6: 0.35,  # Sunday
+}
 
 
 # ============================================================
@@ -51,6 +83,7 @@ ORDER_WEIGHT_CLASSES = [
     "VERY_HEAVY",
 ]
 
+
 ORDER_WEIGHT_CLASS_WEIGHTS = {
     "SMALL": 0.60,
     "MEDIUM": 0.25,
@@ -59,12 +92,6 @@ ORDER_WEIGHT_CLASS_WEIGHTS = {
 }
 
 
-# Target weight ranges in kg.
-#
-# The generator does NOT simply assign this weight.
-# It selects real products and quantities until the
-# calculated order weight reaches the target range.
-
 ORDER_WEIGHT_RANGES = {
     "SMALL": (1.0, 100.0),
     "MEDIUM": (100.0, 500.0),
@@ -72,8 +99,7 @@ ORDER_WEIGHT_RANGES = {
     "VERY_HEAVY": (2000.0, 4500.0),
 }
 
-# Heavy-order sub-ranges. These are used to make sure the
-# synthetic dataset contains visible 2t, 3t and 4t+ orders.
+
 VERY_HEAVY_SUBRANGES = [
     (2000.0, 2999.9),
     (3000.0, 3999.9),
@@ -120,6 +146,7 @@ DELIVERY_PRIORITIES = [
     "URGENT",
 ]
 
+
 DELIVERY_PRIORITY_WEIGHTS = {
     "LOW": 0.20,
     "NORMAL": 0.60,
@@ -128,21 +155,8 @@ DELIVERY_PRIORITY_WEIGHTS = {
 }
 
 
-def generate_delivery_priority():
-    """Generate a synthetic delivery priority."""
-
-    return random.choices(
-        DELIVERY_PRIORITIES,
-        weights=[
-            DELIVERY_PRIORITY_WEIGHTS[priority]
-            for priority in DELIVERY_PRIORITIES
-        ],
-        k=1,
-    )[0]
-
-
 # ============================================================
-# RANDOM GENERATOR
+# RANDOM SEED
 # ============================================================
 
 random.seed(RANDOM_SEED)
@@ -151,7 +165,6 @@ random.seed(RANDOM_SEED)
 # ============================================================
 # CSV HELPERS
 # ============================================================
-
 
 def read_csv(file_path):
     """
@@ -175,68 +188,140 @@ def read_csv(file_path):
 
 
 # ============================================================
-# LOAD PRODUCTS
+# PRODUCT WEIGHT
 # ============================================================
-
 
 def generate_synthetic_unit_weight(product):
     """
-    Generate a deterministic synthetic logistics weight for a product.
+    Generate a deterministic synthetic logistics weight.
 
-    ABB product master values are kept untouched. If the source product
-    does not contain a unit weight, the warehouse simulation assigns a
-    synthetic weight so that order and shipping analytics can still be
-    generated.
+    ABB source weights are not modified.
+    Because the current ABB source does not provide usable
+    unit weights, synthetic logistics weights are generated.
 
-    The value is deterministic for the same article number, so rerunning
-    the generator with the same product master produces the same weight.
+    The same article number always produces the same weight.
     """
 
-    import hashlib
-    import math
-
     article_number = str(
-        product.get("article_number", "")
+        product.get(
+            "article_number",
+            "",
+        )
     ).strip()
 
     digest = hashlib.sha256(
         article_number.encode("utf-8")
     ).hexdigest()
 
-    seed_value = int(digest[:16], 16)
-    normalized = seed_value / float(16**16 - 1)
+    seed_value = int(
+        digest[:16],
+        16,
+    )
 
-    # Log-style distribution from approximately 0.05 kg to 25 kg.
-    # This creates many small products and a smaller number of heavier
-    # products, which is more useful for warehouse simulation than a
-    # uniform distribution.
+    normalized = (
+        seed_value
+        / float(
+            16**16 - 1
+        )
+    )
+
     minimum = 0.05
     maximum = 25.0
 
-    weight = minimum * (
-        maximum / minimum
-    ) ** normalized
+    weight = (
+        minimum
+        * (
+            maximum / minimum
+        ) ** normalized
+    )
 
-    return round(weight, 3)
+    return round(
+        weight,
+        3,
+    )
+
+
+def parse_source_weight(raw_weight):
+    """
+    Try to parse a source weight.
+
+    Returns:
+        float or None
+    """
+
+    if raw_weight is None:
+        return None
+
+    value = str(
+        raw_weight
+    ).strip()
+
+    if not value:
+        return None
+
+    try:
+
+        if "," in value and "." in value:
+
+            if value.rfind(",") > value.rfind("."):
+
+                value = (
+                    value
+                    .replace(".", "")
+                    .replace(",", ".")
+                )
+
+            else:
+
+                value = (
+                    value
+                    .replace(",", "")
+                )
+
+        elif "," in value:
+
+            value = value.replace(
+                ",",
+                ".",
+            )
+
+        parsed = float(
+            value
+        )
+
+        if parsed > 0:
+            return parsed
+
+    except (
+        ValueError,
+        TypeError,
+    ):
+        pass
+
+    return None
 
 
 def load_products():
     """
     Load product master and prepare logistics weights.
 
-    The ABB product master remains unchanged. When unit_weight_kg is
-    missing in the source data, a deterministic synthetic logistics
-    weight is generated for the warehouse simulation.
+    Source product data is preserved.
+    Synthetic weights are only used when no valid
+    source weight is available.
     """
 
-    products = read_csv(PRODUCT_FILE)
+    products = read_csv(
+        PRODUCT_FILE
+    )
 
     if not products:
+
         raise ValueError(
             "Product master is empty."
         )
 
     required_fields = {
+        "product_id",
         "article_number",
         "unit_weight_kg",
     }
@@ -247,93 +332,92 @@ def load_products():
     )
 
     if missing_fields:
+
         raise ValueError(
             "Product master is missing fields: "
             f"{missing_fields}"
         )
 
     valid_products = []
-    real_weight_count = 0
+
+    source_weight_count = 0
     synthetic_weight_count = 0
     invalid_weight_count = 0
 
     for product in products:
 
         product_id = str(
-            product.get("article_number", "")
+            product.get(
+                "product_id",
+                "",
+            )
+        ).strip()
+
+        article_number = str(
+            product.get(
+                "article_number",
+                "",
+            )
         ).strip()
 
         if not product_id:
             continue
 
-        raw_weight = product.get(
-            "unit_weight_kg",
-            "",
+        if not article_number:
+            continue
+
+        source_weight = parse_source_weight(
+            product.get(
+                "unit_weight_kg",
+                "",
+            )
         )
 
-        weight = None
+        if source_weight is not None:
 
-        if raw_weight is not None:
-            raw_weight = str(
-                raw_weight
-            ).strip()
+            product["unit_weight_kg"] = (
+                round(
+                    source_weight,
+                    3,
+                )
+            )
 
-        if raw_weight:
-            normalized = raw_weight
+            product["weight_source"] = (
+                "ABB_SOURCE"
+            )
+
+            source_weight_count += 1
+
+        else:
 
             if (
-                "," in normalized
-                and "." in normalized
-            ):
-                if normalized.rfind(",") > normalized.rfind("."):
-                    normalized = (
-                        normalized
-                        .replace(".", "")
-                        .replace(",", ".")
-                    )
-                else:
-                    normalized = normalized.replace(
-                        ",", ""
-                    )
-
-            elif "," in normalized:
-                normalized = normalized.replace(
-                    ",", "."
+                product.get(
+                    "unit_weight_kg",
+                    "",
                 )
-
-            try:
-                parsed_weight = float(
-                    normalized
-                )
-
-                if parsed_weight > 0:
-                    weight = parsed_weight
-                    real_weight_count += 1
-
-            except (
-                ValueError,
-                TypeError,
             ):
+
                 invalid_weight_count += 1
 
-        # ABB source has no unit weights in the current product master.
-        # Use a clearly synthetic logistics weight instead of inventing
-        # a value inside the ABB source file.
-        if weight is None:
-            weight = generate_synthetic_unit_weight(
-                product
+            synthetic_weight = (
+                generate_synthetic_unit_weight(
+                    product
+                )
             )
+
+            product["unit_weight_kg"] = (
+                synthetic_weight
+            )
+
+            product["weight_source"] = (
+                "SYNTHETIC"
+            )
+
             synthetic_weight_count += 1
 
-        product["unit_weight_kg"] = weight
-        product["weight_source"] = (
-            "ABB_SOURCE"
-            if raw_weight
-            and weight == float(raw_weight.replace(",", "."))
-            else "SYNTHETIC"
+        valid_products.append(
+            product
         )
-
-        valid_products.append(product)
 
     print()
     print("Product Weight Validation")
@@ -345,12 +429,12 @@ def load_products():
     )
 
     print(
-        f"ABB source weights:    "
-        f"{real_weight_count:,}"
+        f"ABB source weights:   "
+        f"{source_weight_count:,}"
     )
 
     print(
-        f"Synthetic weights:     "
+        f"Synthetic weights:    "
         f"{synthetic_weight_count:,}"
     )
 
@@ -360,20 +444,29 @@ def load_products():
     )
 
     if not valid_products:
+
         raise ValueError(
-            "No products available for order generation."
+            "No valid products available."
         )
 
     return valid_products
 
-# ============================================================
-# LOAD INVENTORY
-# ============================================================
 
+# ============================================================
+# INVENTORY
+# ============================================================
 
 def load_inventory():
     """
-    Load warehouse inventory.
+    Load inventory snapshot.
+
+    IMPORTANT:
+
+    The inventory snapshot is NOT consumed during historical
+    order generation.
+
+    It is only used to identify products that exist in the
+    warehouse.
     """
 
     inventory = read_csv(
@@ -381,6 +474,7 @@ def load_inventory():
     )
 
     if not inventory:
+
         raise ValueError(
             "Inventory is empty."
         )
@@ -397,6 +491,7 @@ def load_inventory():
     )
 
     if missing_fields:
+
         raise ValueError(
             "Inventory is missing fields: "
             f"{missing_fields}"
@@ -405,35 +500,46 @@ def load_inventory():
     return inventory
 
 
-# ============================================================
-# INVENTORY INDEX
-# ============================================================
-
-
 def build_inventory_index(
     inventory,
 ):
     """
-    Build:
+    Build product availability index.
 
-        product_id -> available quantity
+    Multiple inventory records for the same product
+    are aggregated.
 
-    Quantities from multiple locations are aggregated.
+    Result:
+
+        product_id -> total reference quantity
     """
 
     inventory_index = {}
 
     for record in inventory:
 
-        product_id = record[
-            "product_id"
-        ]
+        product_id = str(
+            record[
+                "product_id"
+            ]
+        ).strip()
 
-        quantity = int(
-            float(
-                record["quantity"]
+        try:
+
+            quantity = int(
+                float(
+                    record[
+                        "quantity"
+                    ]
+                )
             )
-        )
+
+        except (
+            ValueError,
+            TypeError,
+        ):
+
+            continue
 
         inventory_index[
             product_id
@@ -449,34 +555,70 @@ def build_inventory_index(
 
 
 # ============================================================
-# PRODUCT INDEX
+# AVAILABLE PRODUCT POOL
 # ============================================================
 
-
-def build_product_index(
+def build_available_product_pool(
     products,
+    inventory_index,
 ):
     """
-    Build:
+    Build the available product pool ONCE.
 
-        product_id -> product
+    This is important for performance.
+
+    We do NOT filter 16k products for every order.
     """
 
-    return {
-        product["product_id"]: product
-        for product in products
-    }
+    available_products = []
+
+    for product in products:
+
+        product_id = product[
+            "product_id"
+        ]
+
+        quantity = inventory_index.get(
+            product_id,
+            0,
+        )
+
+        if quantity <= 0:
+            continue
+
+        unit_weight = float(
+            product[
+                "unit_weight_kg"
+            ]
+        )
+
+        if unit_weight <= 0:
+            continue
+
+        available_products.append(
+            product
+        )
+
+    if not available_products:
+
+        raise ValueError(
+            "No products with positive inventory "
+            "are available."
+        )
+
+    return available_products
 
 
 # ============================================================
 # CUSTOMER GENERATION
 # ============================================================
 
-
 def generate_customer_id(
     number,
 ):
-    return f"CUST-{number:05d}"
+    return (
+        f"CUST-{number:05d}"
+    )
 
 
 def generate_customers(
@@ -493,6 +635,18 @@ def generate_customers(
         count + 1,
     ):
 
+        customer_type = random.choices(
+            [
+                "B2B",
+                "B2C",
+            ],
+            weights=[
+                0.80,
+                0.20,
+            ],
+            k=1,
+        )[0]
+
         customers.append(
             {
                 "customer_id": (
@@ -500,13 +654,8 @@ def generate_customers(
                         number
                     )
                 ),
-                "customer_type": random.choice(
-                    [
-                        "B2B",
-                        "B2B",
-                        "B2B",
-                        "B2C",
-                    ]
+                "customer_type": (
+                    customer_type
                 ),
                 "status": "ACTIVE",
             }
@@ -516,14 +665,74 @@ def generate_customers(
 
 
 # ============================================================
-# DATE GENERATION
+# DELIVERY PRIORITY
 # ============================================================
 
+def generate_delivery_priority():
+    """
+    Generate delivery priority.
+    """
+
+    priorities = list(
+        DELIVERY_PRIORITY_WEIGHTS.keys()
+    )
+
+    weights = [
+        DELIVERY_PRIORITY_WEIGHTS[
+            priority
+        ]
+        for priority in priorities
+    ]
+
+    return random.choices(
+        priorities,
+        weights=weights,
+        k=1,
+    )[0]
+
+
+# ============================================================
+# ORDER STATUS
+# ============================================================
+
+def generate_order_status():
+    """
+    Generate order status.
+    """
+
+    statuses = list(
+        ORDER_STATUS_WEIGHTS.keys()
+    )
+
+    weights = [
+        ORDER_STATUS_WEIGHTS[
+            status
+        ]
+        for status in statuses
+    ]
+
+    return random.choices(
+        statuses,
+        weights=weights,
+        k=1,
+    )[0]
+
+
+# ============================================================
+# ORDER DATETIME
+# ============================================================
 
 def generate_order_datetime():
     """
-    Generate random order timestamp
-    within the configured history.
+    Generate order datetime over the last 365 days.
+
+    Demand is affected by:
+
+    - month
+    - summer slowdown
+    - November / December peak
+    - weekday
+    - weekend reduction
     """
 
     now = datetime.now()
@@ -535,20 +744,65 @@ def generate_order_datetime():
         )
     )
 
-    total_seconds = int(
-        (
-            now
-            - start_date
-        ).total_seconds()
+    days = []
+
+    current_date = (
+        start_date.date()
     )
+
+    end_date = now.date()
+
+    while current_date <= end_date:
+
+        month_multiplier = (
+            MONTH_DEMAND_MULTIPLIERS.get(
+                current_date.month,
+                1.0,
+            )
+        )
+
+        weekday_multiplier = (
+            WEEKDAY_DEMAND_MULTIPLIERS.get(
+                current_date.weekday(),
+                1.0,
+            )
+        )
+
+        demand_weight = (
+            month_multiplier
+            * weekday_multiplier
+        )
+
+        days.append(
+            (
+                current_date,
+                demand_weight,
+            )
+        )
+
+        current_date += timedelta(
+            days=1
+        )
+
+    selected_date = random.choices(
+        days,
+        weights=[
+            weight
+            for _, weight in days
+        ],
+        k=1,
+    )[0][0]
 
     random_seconds = random.randint(
         0,
-        total_seconds,
+        (24 * 60 * 60) - 1,
     )
 
     return (
-        start_date
+        datetime.combine(
+            selected_date,
+            datetime.min.time(),
+        )
         + timedelta(
             seconds=random_seconds
         )
@@ -556,35 +810,12 @@ def generate_order_datetime():
 
 
 # ============================================================
-# ORDER STATUS
-# ============================================================
-
-
-def generate_order_status():
-    """
-    Generate order status.
-    """
-
-    weights = [
-        ORDER_STATUS_WEIGHTS[status]
-        for status in ORDER_STATUSES
-    ]
-
-    return random.choices(
-        ORDER_STATUSES,
-        weights=weights,
-        k=1,
-    )[0]
-
-
-# ============================================================
 # WEIGHT CLASS
 # ============================================================
 
-
 def generate_weight_class():
     """
-    Select target order weight class.
+    Generate target order weight class.
     """
 
     classes = list(
@@ -605,15 +836,15 @@ def generate_weight_class():
     )[0]
 
 
-def generate_weight_target(weight_class):
+def generate_weight_target(
+    weight_class,
+):
     """
-    Generate a target weight range.
-
-    VERY_HEAVY orders are explicitly split across
-    2t, 3t and 4t+ ranges.
+    Generate target order weight range.
     """
 
     if weight_class == "VERY_HEAVY":
+
         return random.choice(
             VERY_HEAVY_SUBRANGES
         )
@@ -624,61 +855,64 @@ def generate_weight_target(weight_class):
 
 
 # ============================================================
-# PRODUCT POOL
+# PRODUCT SELECTION
 # ============================================================
 
-
-def build_available_product_pool(
-    products,
-    inventory_index,
+def choose_product_for_order(
+    available_products,
+    target_min_weight,
 ):
     """
-    Return products that:
+    Choose one product.
 
-        1. exist in inventory
-        2. have positive inventory
-        3. have valid unit weight
+    For heavy orders, sample only a small subset of products
+    and prefer products with higher unit weight.
+
+    IMPORTANT:
+
+    We never scan all 16,926 products for every order.
     """
 
-    available = []
+    if (
+        target_min_weight >= 2000
+    ):
 
-    for product in products:
-
-        product_id = product["product_id"]
-
-        if product_id not in inventory_index:
-            continue
-
-        if (
-            inventory_index[product_id]
-            <= 0
-        ):
-            continue
-
-        weight = float(
-            product["unit_weight_kg"]
+        sample_size = min(
+            100,
+            len(
+                available_products
+            ),
         )
 
-        if weight <= 0:
-            continue
+        candidates = random.sample(
+            available_products,
+            sample_size,
+        )
 
-        available.append(
+        heavy_candidates = [
             product
-        )
+            for product in candidates
+            if float(
+                product[
+                    "unit_weight_kg"
+                ]
+            ) >= 5.0
+        ]
 
-    if not available:
-        raise ValueError(
-            "No products available "
-            "for order generation."
-        )
+        if heavy_candidates:
 
-    return available
+            return random.choice(
+                heavy_candidates
+            )
+
+    return random.choice(
+        available_products
+    )
 
 
 # ============================================================
 # ORDER HEADER
 # ============================================================
-
 
 def generate_order(
     order_number,
@@ -686,7 +920,7 @@ def generate_order(
     weight_class,
 ):
     """
-    Generate one order header.
+    Generate order header.
     """
 
     order_id = (
@@ -697,11 +931,23 @@ def generate_order(
         generate_order_datetime()
     )
 
+    requested_delivery_datetime = (
+        order_datetime
+        + timedelta(
+            hours=random.randint(
+                48,
+                120,
+            )
+        )
+    )
+
     return {
         "order_id": order_id,
-        "customer_id": customer[
-            "customer_id"
-        ],
+        "customer_id": (
+            customer[
+                "customer_id"
+            ]
+        ),
         "order_datetime": (
             order_datetime.isoformat(
                 timespec="seconds"
@@ -717,12 +963,9 @@ def generate_order(
             weight_class
         ),
         "requested_delivery_datetime": (
-            (
-                order_datetime
-                + timedelta(
-                    hours=random.randint(48, 120)
-                )
-            ).isoformat(timespec="seconds")
+            requested_delivery_datetime.isoformat(
+                timespec="seconds"
+            )
         ),
         "total_items": 0,
         "total_weight_kg": 0.0,
@@ -733,45 +976,67 @@ def generate_order(
 # ORDER ITEM GENERATION
 # ============================================================
 
-
-def choose_product_for_order(
-    available_products,
-    target_min_weight,
-):
-    """
-    Choose a product.
-
-    For very heavy orders, favor heavier products so the
-    generator can reliably reach 2t, 3t and 4t+ ranges.
-    """
-
-    if target_min_weight >= 2000:
-        candidates = [
-            product
-            for product in available_products
-            if float(product["unit_weight_kg"]) >= 5.0
-        ]
-
-        if candidates:
-            return random.choice(candidates)
-
-    return random.choice(
-        available_products
-    )
-
-
-def calculate_item_weight(
+def create_order_item(
+    order,
+    product,
+    line_number,
     quantity,
-    unit_weight_kg,
 ):
     """
-    Calculate total weight of an order item.
+    Create one order item.
     """
 
-    return (
-        quantity
-        * unit_weight_kg
+    unit_weight = float(
+        product[
+            "unit_weight_kg"
+        ]
     )
+
+    total_weight = (
+        quantity
+        * unit_weight
+    )
+
+    return {
+        "order_item_id": (
+            f"{order['order_id']}"
+            f"-ITEM-{line_number:02d}"
+        ),
+        "order_id": (
+            order[
+                "order_id"
+            ]
+        ),
+        "line_number": (
+            line_number
+        ),
+        "product_id": (
+            product[
+                "product_id"
+            ]
+        ),
+        "requested_quantity": (
+            quantity
+        ),
+        "unit_weight_kg": round(
+            unit_weight,
+            3,
+        ),
+        "weight_source": (
+            product.get(
+                "weight_source",
+                "SYNTHETIC",
+            )
+        ),
+        "total_weight_kg": round(
+            total_weight,
+            3,
+        ),
+        "picked_quantity": 0,
+        "packed_quantity": 0,
+        "shipped_quantity": 0,
+        "item_status": "NOT_STARTED",
+    }
 
 
 def generate_order_items(
@@ -783,15 +1048,15 @@ def generate_order_items(
     target_max_weight,
 ):
     """
-    Generate order items until the calculated
-    order weight reaches the target range.
+    Generate order items efficiently.
 
-    Weight is always calculated from:
+    No 100-attempt loop.
 
-        quantity * product unit weight
+    Each order gets between 1 and MAX_ITEMS_PER_ORDER
+    unique products.
 
-    The unit weight is taken from the ABB source when available;
-    otherwise it is a clearly marked synthetic logistics weight.
+    Quantity is calculated directly from the remaining
+    target weight.
     """
 
     items = []
@@ -800,85 +1065,55 @@ def generate_order_items(
 
     total_weight = 0.0
 
-    max_attempts = 100
+    # --------------------------------------------------------
+    # Determine number of lines first.
+    # --------------------------------------------------------
 
-    attempts = 0
+    if target_min_weight < 100:
 
-    while attempts < max_attempts:
-
-        attempts += 1
-
-        # ----------------------------------------------------
-        # Stop if target weight has been reached.
-        # ----------------------------------------------------
-
-        if total_weight >= target_min_weight:
-
-            # For small and medium orders we usually stop
-            # once the target range is reached.
-            #
-            # For very heavy orders we allow the same logic
-            # but still cap the order at the configured range.
-
-            if total_weight <= target_max_weight:
-                break
-
-        # ----------------------------------------------------
-        # Maximum number of lines.
-        # ----------------------------------------------------
-
-        if len(items) >= MAX_ITEMS_PER_ORDER:
-            break
-
-        # ----------------------------------------------------
-        # Select product.
-        # ----------------------------------------------------
-
-        # Refresh the product pool because previous orders
-        # reserve inventory as generation progresses.
-        current_products = [
-            p
-            for p in available_products
-            if inventory_index.get(
-                p["product_id"],
-                0,
-            ) > 0
-        ]
-
-        if not current_products:
-            break
-
-        product = choose_product_for_order(
-            current_products,
-            target_min_weight,
+        target_lines = random.randint(
+            1,
+            min(
+                3,
+                MAX_ITEMS_PER_ORDER,
+            ),
         )
 
-        product_id = (
-            product["product_id"]
+    elif target_min_weight < 500:
+
+        target_lines = random.randint(
+            1,
+            min(
+                5,
+                MAX_ITEMS_PER_ORDER,
+            ),
         )
 
-        if product_id in used_products:
-            continue
+    elif target_min_weight < 2000:
 
-        available_quantity = int(
-            inventory_index[
-                product_id
-            ]
+        target_lines = random.randint(
+            2,
+            min(
+                6,
+                MAX_ITEMS_PER_ORDER,
+            ),
         )
 
-        if available_quantity <= 0:
-            continue
+    else:
 
-        unit_weight = float(
-            product["unit_weight_kg"]
+        target_lines = random.randint(
+            3,
+            MAX_ITEMS_PER_ORDER,
         )
 
-        if unit_weight <= 0:
-            continue
+    # --------------------------------------------------------
+    # Generate each line.
+    # --------------------------------------------------------
 
-        # ----------------------------------------------------
-        # Remaining target weight.
-        # ----------------------------------------------------
+    for line_number in range(
+        1,
+        target_lines + 1,
+    ):
 
         remaining_weight = (
             target_max_weight
@@ -889,110 +1124,264 @@ def generate_order_items(
             break
 
         # ----------------------------------------------------
-        # Maximum quantity that fits into
-        # remaining target weight.
+        # Select product.
         # ----------------------------------------------------
 
-        quantity_by_weight = int(
+        product = None
+
+        for _ in range(10):
+
+            candidate = (
+                choose_product_for_order(
+                    available_products,
+                    target_min_weight,
+                )
+            )
+
+            candidate_id = candidate[
+                "product_id"
+            ]
+
+            if candidate_id not in used_products:
+
+                product = candidate
+                break
+
+        if product is None:
+            break
+
+        product_id = product[
+            "product_id"
+        ]
+
+        unit_weight = float(
+            product[
+                "unit_weight_kg"
+            ]
+        )
+
+        if unit_weight <= 0:
+            continue
+
+        # ----------------------------------------------------
+        # Remaining lines after this one.
+        # ----------------------------------------------------
+
+        remaining_lines = (
+            target_lines
+            - line_number
+        )
+
+        # ----------------------------------------------------
+        # For the final line, try to reach minimum target.
+        # ----------------------------------------------------
+
+        if (
+            remaining_lines == 0
+            and total_weight
+            < target_min_weight
+        ):
+
+            required_weight = (
+                target_min_weight
+                - total_weight
+            )
+
+            quantity = max(
+                1,
+                int(
+                    required_weight
+                    / unit_weight
+                ),
+            )
+
+        else:
+
+            # Normal quantity generation.
+            quantity = random.randint(
+                MIN_QUANTITY_PER_ITEM,
+                MAX_QUANTITY_PER_ITEM,
+            )
+
+        # ----------------------------------------------------
+        # Heavy orders may require larger quantities.
+        # ----------------------------------------------------
+
+        if target_min_weight >= 2000:
+
+            quantity = max(
+                quantity,
+                int(
+                    (
+                        target_min_weight
+                        / max(
+                            target_lines,
+                            1,
+                        )
+                    )
+                    / unit_weight
+                ),
+            )
+
+        # ----------------------------------------------------
+        # Never exceed maximum order weight.
+        # ----------------------------------------------------
+
+        max_quantity_by_weight = int(
             remaining_weight
             / unit_weight
         )
 
-        if quantity_by_weight < 1:
+        if max_quantity_by_weight <= 0:
             continue
 
-        quantity_cap = (
-            1000
-            if target_min_weight >= 2000
-            else MAX_QUANTITY_PER_ITEM
-        )
-
-        max_quantity = min(
-            quantity_cap,
-            available_quantity,
-            quantity_by_weight,
-        )
-
-        if max_quantity < MIN_QUANTITY_PER_ITEM:
-            continue
-
-        quantity = random.randint(
-            MIN_QUANTITY_PER_ITEM,
-            max_quantity,
-        )
-
-        item_weight = (
-            calculate_item_weight(
-                quantity,
-                unit_weight,
-            )
+        quantity = min(
+            quantity,
+            max_quantity_by_weight,
         )
 
         # ----------------------------------------------------
-        # Safety check.
+        # Enforce quantity minimum.
         # ----------------------------------------------------
 
-        if (
-            total_weight
-            + item_weight
-            > target_max_weight
-        ):
+        if quantity < 1:
             continue
 
-        line_number = (
-            len(items) + 1
+        item = create_order_item(
+            order=order,
+            product=product,
+            line_number=line_number,
+            quantity=quantity,
         )
 
-        item = {
-            "order_item_id": (
-                f"{order['order_id']}"
-                f"-ITEM-{line_number:02d}"
-            ),
-            "order_id": order[
-                "order_id"
-            ],
-            "line_number": line_number,
-            "product_id": product_id,
-            "requested_quantity": quantity,
-            "unit_weight_kg": round(
-                unit_weight,
-                3,
-            ),
-            "weight_source": product.get(
-                "weight_source",
-                "SYNTHETIC",
-            ),
-            "total_weight_kg": round(
-                item_weight,
-                3,
-            ),
-            "picked_quantity": 0,
-            "packed_quantity": 0,
-            "shipped_quantity": 0,
-            "item_status": "NOT_STARTED",
-        }
-
-        items.append(item)
+        items.append(
+            item
+        )
 
         used_products.add(
             product_id
         )
 
-        total_weight += item_weight
+        total_weight += float(
+            item[
+                "total_weight_kg"
+            ]
+        )
 
     # --------------------------------------------------------
-    # If the generated order is below the target minimum,
-    # return what we have. The validation will identify
-    # extremely unusual cases.
+    # Final correction:
+    #
+    # If the order is below the target minimum, add one
+    # additional item if possible.
     # --------------------------------------------------------
+
+    if (
+        total_weight < target_min_weight
+        and len(items)
+        < MAX_ITEMS_PER_ORDER
+    ):
+
+        required_weight = (
+            target_min_weight
+            - total_weight
+        )
+
+        # Sample only a small number of products.
+        sample_size = min(
+            100,
+            len(
+                available_products
+            ),
+        )
+
+        candidates = random.sample(
+            available_products,
+            sample_size,
+        )
+
+        candidates = [
+            product
+            for product in candidates
+            if (
+                product[
+                    "product_id"
+                ]
+                not in used_products
+            )
+            and float(
+                product[
+                    "unit_weight_kg"
+                ]
+            ) > 0
+        ]
+
+        if candidates:
+
+            # Pick a product whose unit weight is
+            # reasonably close to the remaining target.
+            product = min(
+                candidates,
+                key=lambda candidate: abs(
+                    float(
+                        candidate[
+                            "unit_weight_kg"
+                        ]
+                    )
+                    - required_weight
+                ),
+            )
+
+            unit_weight = float(
+                product[
+                    "unit_weight_kg"
+                ]
+            )
+
+            quantity = max(
+                1,
+                int(
+                    required_weight
+                    / unit_weight
+                ),
+            )
+
+            quantity = min(
+                quantity,
+                MAX_QUANTITY_PER_ITEM,
+            )
+
+            item_weight = (
+                quantity
+                * unit_weight
+            )
+
+            if (
+                total_weight
+                + item_weight
+                <= target_max_weight
+            ):
+
+                line_number = (
+                    len(items) + 1
+                )
+
+                item = create_order_item(
+                    order=order,
+                    product=product,
+                    line_number=line_number,
+                    quantity=quantity,
+                )
+
+                items.append(
+                    item
+                )
 
     return items
 
 
 # ============================================================
-# GENERATE ALL ORDERS
+# GENERATE ORDERS
 # ============================================================
-
 
 def generate_orders(
     number_of_orders,
@@ -1001,11 +1390,19 @@ def generate_orders(
     inventory_index,
 ):
     """
-    Generate orders and order items.
+    Generate historical warehouse orders.
 
-    Each order receives a target weight class.
-    Actual weight is calculated from real products.
+    Inventory is NOT consumed.
+
+    The inventory snapshot only determines which products
+    are available for the synthetic simulation.
     """
+
+    # --------------------------------------------------------
+    # IMPORTANT PERFORMANCE OPTIMIZATION:
+    #
+    # This is built ONCE.
+    # --------------------------------------------------------
 
     available_products = (
         build_available_product_pool(
@@ -1014,11 +1411,12 @@ def generate_orders(
         )
     )
 
-    product_index = (
-        build_product_index(
-            products
-        )
-    )
+    product_index = {
+        product[
+            "product_id"
+        ]: product
+        for product in products
+    }
 
     orders = []
     order_items = []
@@ -1057,7 +1455,9 @@ def generate_orders(
             inventory_index=(
                 inventory_index
             ),
-            product_index=product_index,
+            product_index=(
+                product_index
+            ),
             target_min_weight=(
                 target_min_weight
             ),
@@ -1087,33 +1487,39 @@ def generate_orders(
             for item in items
         )
 
-        order["total_items"] = (
-            total_items
-        )
+        order[
+            "total_items"
+        ] = total_items
 
-        order["total_weight_kg"] = round(
+        order[
+            "total_weight_kg"
+        ] = round(
             total_weight,
             3,
         )
 
-        # Reserve inventory for this order so that later orders
-        # cannot request the same stock again.
-        for item in items:
-            product_id = item["product_id"]
-            requested_quantity = int(
-                item["requested_quantity"]
-            )
-
-            inventory_index[product_id] = (
-                inventory_index.get(product_id, 0)
-                - requested_quantity
-            )
-
-        orders.append(order)
+        orders.append(
+            order
+        )
 
         order_items.extend(
             items
         )
+
+        # ----------------------------------------------------
+        # Progress output.
+        # ----------------------------------------------------
+
+        if (
+            order_number % 5_000
+            == 0
+        ):
+
+            print(
+                f"  Generated "
+                f"{order_number:,} / "
+                f"{number_of_orders:,} orders..."
+            )
 
     return (
         orders,
@@ -1125,25 +1531,35 @@ def generate_orders(
 # VALIDATION
 # ============================================================
 
-
 def validate_orders(
     orders,
     order_items,
     customers,
     inventory_index,
-    original_inventory_index=None,
 ):
     """
-    Validate generated orders.
+    Validate generated orders and order items.
     """
 
+    assert orders, (
+        "No orders were generated."
+    )
+
+    assert order_items, (
+        "No order items were generated."
+    )
+
     customer_ids = {
-        customer["customer_id"]
+        customer[
+            "customer_id"
+        ]
         for customer in customers
     }
 
     order_ids = [
-        order["order_id"]
+        order[
+            "order_id"
+        ]
         for order in orders
     ]
 
@@ -1152,11 +1568,13 @@ def validate_orders(
     ) == len(
         set(order_ids)
     ), (
-        "Duplicate order_id values detected."
+        "Duplicate order IDs detected."
     )
 
     order_item_ids = [
-        item["order_item_id"]
+        item[
+            "order_item_id"
+        ]
         for item in order_items
     ]
 
@@ -1165,50 +1583,64 @@ def validate_orders(
     ) == len(
         set(order_item_ids)
     ), (
-        "Duplicate order_item_id values detected."
+        "Duplicate order item IDs detected."
     )
 
     order_lookup = {
-        order["order_id"]: order
+        order[
+            "order_id"
+        ]: order
         for order in orders
     }
 
     # --------------------------------------------------------
-    # Validate order headers
+    # Validate orders.
     # --------------------------------------------------------
 
     for order in orders:
 
+        order_id = order[
+            "order_id"
+        ]
+
         assert (
-            order["customer_id"]
+            order[
+                "customer_id"
+            ]
             in customer_ids
         ), (
-            f"Unknown customer_id: "
+            f"Unknown customer: "
             f"{order['customer_id']}"
         )
 
         assert (
-            order["order_status"]
+            order[
+                "order_status"
+            ]
             in ORDER_STATUSES
         ), (
-            f"Invalid order status: "
-            f"{order['order_status']}"
+            f"Invalid order status "
+            f"for {order_id}"
         )
 
         assert (
-            order["delivery_priority"]
+            order[
+                "delivery_priority"
+            ]
             in DELIVERY_PRIORITIES
         ), (
-            f"Invalid delivery priority: "
-            f"{order['delivery_priority']}"
+            f"Invalid delivery priority "
+            f"for {order_id}"
         )
 
         assert (
-            order["order_weight_class"]
+            order[
+                "order_weight_class"
+            ]
             in ORDER_WEIGHT_CLASSES
         ), (
-            f"Invalid weight class: "
-            f"{order['order_weight_class']}"
+            f"Invalid weight class "
+            f"for {order_id}"
         )
 
         assert (
@@ -1216,10 +1648,11 @@ def validate_orders(
                 order[
                     "total_weight_kg"
                 ]
-            ) > 0
+            )
+            > 0
         ), (
-            f"Invalid total weight "
-            f"for {order['order_id']}"
+            f"Invalid order weight "
+            f"for {order_id}"
         )
 
         assert (
@@ -1227,29 +1660,42 @@ def validate_orders(
                 order[
                     "total_items"
                 ]
-            ) > 0
+            )
+            > 0
         ), (
             f"Invalid total items "
-            f"for {order['order_id']}"
+            f"for {order_id}"
         )
 
-        order_datetime = datetime.fromisoformat(
-            order["order_datetime"]
-        )
-        requested_delivery_datetime = datetime.fromisoformat(
-            order["requested_delivery_datetime"]
+        order_datetime = (
+            datetime.fromisoformat(
+                order[
+                    "order_datetime"
+                ]
+            )
         )
 
-        assert requested_delivery_datetime > order_datetime, (
-            f"Requested delivery datetime must be after "
-            f"order datetime for {order['order_id']}"
+        delivery_datetime = (
+            datetime.fromisoformat(
+                order[
+                    "requested_delivery_datetime"
+                ]
+            )
+        )
+
+        assert (
+            delivery_datetime
+            > order_datetime
+        ), (
+            f"Requested delivery datetime "
+            f"is invalid for {order_id}"
         )
 
     # --------------------------------------------------------
-    # Validate order items
+    # Validate items.
     # --------------------------------------------------------
 
-    order_line_pairs = set()
+    order_product_pairs = set()
 
     for item in order_items:
 
@@ -1264,15 +1710,16 @@ def validate_orders(
         assert (
             order_id in order_lookup
         ), (
-            f"Unknown order_id: "
+            f"Unknown order "
             f"{order_id}"
         )
 
         assert (
-            product_id in inventory_index
+            product_id
+            in inventory_index
         ), (
             f"Product {product_id} "
-            f"does not exist in inventory."
+            f"not present in inventory."
         )
 
         pair = (
@@ -1280,40 +1727,30 @@ def validate_orders(
             product_id,
         )
 
-        assert pair not in order_line_pairs, (
-            "Duplicate product in order: "
-            f"{pair}"
+        assert (
+            pair
+            not in order_product_pairs
+        ), (
+            f"Duplicate product "
+            f"{product_id} in order "
+            f"{order_id}"
         )
 
-        order_line_pairs.add(
+        order_product_pairs.add(
             pair
         )
 
-        requested_quantity = int(
+        quantity = int(
             item[
                 "requested_quantity"
             ]
         )
 
-        validation_inventory = (
-            original_inventory_index
-            if original_inventory_index is not None
-            else inventory_index
-        )
-
-        available_quantity = int(
-            validation_inventory[
-                product_id
-            ]
-        )
-
         assert (
-            requested_quantity
-            <= available_quantity
+            quantity > 0
         ), (
-            f"Requested quantity exceeds "
-            f"inventory for product "
-            f"{product_id}"
+            f"Invalid quantity "
+            f"for {item['order_item_id']}"
         )
 
         unit_weight = float(
@@ -1329,45 +1766,52 @@ def validate_orders(
         )
 
         calculated_weight = (
-            requested_quantity
+            quantity
             * unit_weight
         )
 
         assert abs(
-            total_weight
-            - calculated_weight
+            calculated_weight
+            - total_weight
         ) < 0.01, (
-            f"Weight calculation mismatch "
+            f"Weight mismatch "
             f"for {item['order_item_id']}"
         )
 
         assert (
-            item["picked_quantity"]
+            item[
+                "picked_quantity"
+            ]
             == 0
         )
 
         assert (
-            item["packed_quantity"]
+            item[
+                "packed_quantity"
+            ]
             == 0
         )
 
         assert (
-            item["shipped_quantity"]
+            item[
+                "shipped_quantity"
+            ]
             == 0
         )
 
         assert (
-            item["item_status"]
+            item[
+                "item_status"
+            ]
             == "NOT_STARTED"
         )
 
     # --------------------------------------------------------
-    # Validate order totals
+    # Validate totals.
     # --------------------------------------------------------
 
-    calculated_items = {}
-
-    calculated_weights = {}
+    calculated_quantity = {}
+    calculated_weight = {}
 
     for item in order_items:
 
@@ -1375,10 +1819,10 @@ def validate_orders(
             "order_id"
         ]
 
-        calculated_items[
+        calculated_quantity[
             order_id
         ] = (
-            calculated_items.get(
+            calculated_quantity.get(
                 order_id,
                 0,
             )
@@ -1389,10 +1833,10 @@ def validate_orders(
             )
         )
 
-        calculated_weights[
+        calculated_weight[
             order_id
         ] = (
-            calculated_weights.get(
+            calculated_weight.get(
                 order_id,
                 0.0,
             )
@@ -1409,14 +1853,14 @@ def validate_orders(
             "order_id"
         ]
 
-        expected_items = (
-            calculated_items[
+        expected_quantity = (
+            calculated_quantity[
                 order_id
             ]
         )
 
         expected_weight = (
-            calculated_weights[
+            calculated_weight[
                 order_id
             ]
         )
@@ -1427,9 +1871,9 @@ def validate_orders(
                     "total_items"
                 ]
             )
-            == expected_items
+            == expected_quantity
         ), (
-            f"Item total mismatch "
+            f"Quantity total mismatch "
             f"for {order_id}"
         )
 
@@ -1445,170 +1889,28 @@ def validate_orders(
             f"for {order_id}"
         )
 
-    assert orders, "No orders were generated."
-
-    assert order_items, "No order items were generated."
-
-    if original_inventory_index is not None:
-        for product_id, remaining_quantity in inventory_index.items():
-            assert remaining_quantity >= 0, (
-                f"Inventory reservation went below zero for "
-                f"product {product_id}: {remaining_quantity}"
-            )
-
-        print(
-            "Inventory reservation check passed."
-        )
-
-    if original_inventory_index is not None:
-        requested_by_product = {}
-
-        for item in order_items:
-            product_id = item["product_id"]
-            requested_by_product[product_id] = (
-                requested_by_product.get(
-                    product_id,
-                    0,
-                )
-                + int(
-                    item["requested_quantity"]
-                )
-            )
-
-        for product_id, requested_quantity in requested_by_product.items():
-            original_quantity = original_inventory_index.get(
-                product_id,
-                0,
-            )
-
-            assert requested_quantity <= original_quantity, (
-                f"Global requested quantity exceeds inventory "
-                f"for product {product_id}: "
-                f"{requested_quantity} > {original_quantity}"
-            )
-
     print(
         "Order validation passed."
     )
 
 
 # ============================================================
-# WEIGHT SUMMARY
+# SUMMARY
 # ============================================================
-
-
-def print_weight_summary(
-    orders,
-):
-    """
-    Print distribution of generated order weights.
-    """
-
-    small = 0
-    medium = 0
-    heavy = 0
-    very_heavy = 0
-    two_to_three_tons = 0
-    three_to_four_tons = 0
-    four_plus_tons = 0
-
-    for order in orders:
-
-        weight = float(
-            order[
-                "total_weight_kg"
-            ]
-        )
-
-        if weight < 100:
-            small += 1
-
-        elif weight < 500:
-            medium += 1
-
-        elif weight < 2000:
-            heavy += 1
-
-        else:
-            very_heavy += 1
-
-            if weight < 3000:
-                two_to_three_tons += 1
-
-            elif weight < 4000:
-                three_to_four_tons += 1
-
-            else:
-                four_plus_tons += 1
-
-    total = len(orders)
-
-    print()
-    print("Order Weight Distribution")
-    print("==========================")
-
-    print(
-        f"Under 100 kg:       "
-        f"{small:,} "
-        f"({small / total * 100:.1f}%)"
-    )
-
-    print(
-        f"100 - 500 kg:       "
-        f"{medium:,} "
-        f"({medium / total * 100:.1f}%)"
-    )
-
-    print(
-        f"500 - 2,000 kg:     "
-        f"{heavy:,} "
-        f"({heavy / total * 100:.1f}%)"
-    )
-
-    print(
-        f"2,000+ kg:          "
-        f"{very_heavy:,} "
-        f"({very_heavy / total * 100:.1f}%)"
-    )
-
-    print()
-    print("Heavy Order Detail")
-    print("==================")
-
-    print(
-        f"2,000 - 2,999 kg:    "
-        f"{two_to_three_tons:,}"
-    )
-
-    print(
-        f"3,000 - 3,999 kg:    "
-        f"{three_to_four_tons:,}"
-    )
-
-    print(
-        f"4,000+ kg:           "
-        f"{four_plus_tons:,}"
-    )
-
-
-# ============================================================
-# ORDER SUMMARY
-# ============================================================
-
 
 def print_order_summary(
     orders,
     order_items,
 ):
     """
-    Print general order summary.
+    Print order generation summary.
     """
 
     total_orders = len(
         orders
     )
 
-    total_items = len(
+    total_order_items = len(
         order_items
     )
 
@@ -1630,19 +1932,21 @@ def print_order_summary(
         for order in orders
     )
 
-    average_items_per_order = (
-        total_items / total_orders
+    average_weight = (
+        total_weight
+        / total_orders
         if total_orders
         else 0
     )
 
-    average_weight_per_order = (
-        total_weight / total_orders
+    average_items = (
+        total_order_items
+        / total_orders
         if total_orders
         else 0
     )
 
-    max_weight = max(
+    min_weight = min(
         float(
             order[
                 "total_weight_kg"
@@ -1651,7 +1955,7 @@ def print_order_summary(
         for order in orders
     )
 
-    min_weight = min(
+    max_weight = max(
         float(
             order[
                 "total_weight_kg"
@@ -1665,13 +1969,13 @@ def print_order_summary(
     print("=======================")
 
     print(
-        f"Orders:                 "
+        f"Orders generated:       "
         f"{total_orders:,}"
     )
 
     print(
-        f"Order items:            "
-        f"{total_items:,}"
+        f"Order items generated:  "
+        f"{total_order_items:,}"
     )
 
     print(
@@ -1686,7 +1990,7 @@ def print_order_summary(
 
     print(
         f"Average order weight:   "
-        f"{average_weight_per_order:,.1f} kg"
+        f"{average_weight:,.1f} kg"
     )
 
     print(
@@ -1701,14 +2005,117 @@ def print_order_summary(
 
     print(
         f"Avg items per order:    "
-        f"{average_items_per_order:.2f}"
+        f"{average_items:.2f}"
+    )
+
+
+def print_weight_summary(
+    orders,
+):
+    """
+    Print order weight distribution.
+    """
+
+    under_100 = 0
+    between_100_500 = 0
+    between_500_2000 = 0
+    above_2000 = 0
+
+    two_to_three = 0
+    three_to_four = 0
+    four_plus = 0
+
+    for order in orders:
+
+        weight = float(
+            order[
+                "total_weight_kg"
+            ]
+        )
+
+        if weight < 100:
+
+            under_100 += 1
+
+        elif weight < 500:
+
+            between_100_500 += 1
+
+        elif weight < 2000:
+
+            between_500_2000 += 1
+
+        else:
+
+            above_2000 += 1
+
+            if weight < 3000:
+
+                two_to_three += 1
+
+            elif weight < 4000:
+
+                three_to_four += 1
+
+            else:
+
+                four_plus += 1
+
+    total = len(
+        orders
+    )
+
+    print()
+    print("Order Weight Distribution")
+    print("==========================")
+
+    print(
+        f"Under 100 kg:       "
+        f"{under_100:,} "
+        f"({under_100 / total * 100:.1f}%)"
+    )
+
+    print(
+        f"100 - 500 kg:       "
+        f"{between_100_500:,} "
+        f"({between_100_500 / total * 100:.1f}%)"
+    )
+
+    print(
+        f"500 - 2,000 kg:     "
+        f"{between_500_2000:,} "
+        f"({between_500_2000 / total * 100:.1f}%)"
+    )
+
+    print(
+        f"2,000+ kg:          "
+        f"{above_2000:,} "
+        f"({above_2000 / total * 100:.1f}%)"
+    )
+
+    print()
+    print("Heavy Order Detail")
+    print("==================")
+
+    print(
+        f"2,000 - 2,999 kg:   "
+        f"{two_to_three:,}"
+    )
+
+    print(
+        f"3,000 - 3,999 kg:   "
+        f"{three_to_four:,}"
+    )
+
+    print(
+        f"4,000+ kg:          "
+        f"{four_plus:,}"
     )
 
 
 # ============================================================
 # EXPORT ORDERS
 # ============================================================
-
 
 def export_orders(
     orders,
@@ -1747,6 +2154,7 @@ def export_orders(
         )
 
         writer.writeheader()
+
         writer.writerows(
             orders
         )
@@ -1764,7 +2172,6 @@ def export_orders(
 # ============================================================
 # EXPORT ORDER ITEMS
 # ============================================================
-
 
 def export_order_items(
     order_items,
@@ -1806,6 +2213,7 @@ def export_order_items(
         )
 
         writer.writeheader()
+
         writer.writerows(
             order_items
         )
@@ -1823,7 +2231,6 @@ def export_order_items(
 # ============================================================
 # MAIN
 # ============================================================
-
 
 def main():
 
@@ -1860,10 +2267,6 @@ def main():
         )
     )
 
-    original_inventory_index = (
-        inventory_index.copy()
-    )
-
     print(
         f"Products with inventory: "
         f"{len(inventory_index):,}"
@@ -1889,18 +2292,10 @@ def main():
             ),
             customers=customers,
             products=products,
-            inventory_index=inventory_index,
+            inventory_index=(
+                inventory_index
+            ),
         )
-    )
-
-    print(
-        f"Orders generated: "
-        f"{len(orders):,}"
-    )
-
-    print(
-        f"Order items generated: "
-        f"{len(order_items):,}"
     )
 
     print()
@@ -1910,8 +2305,9 @@ def main():
         orders=orders,
         order_items=order_items,
         customers=customers,
-        inventory_index=inventory_index,
-        original_inventory_index=original_inventory_index,
+        inventory_index=(
+            inventory_index
+        ),
     )
 
     print_order_summary(
@@ -1931,11 +2327,14 @@ def main():
         order_items
     )
 
+    print()
+    print("Order generation completed successfully.")
+
 
 # ============================================================
-# SCRIPT ENTRY POINT
+# ENTRY POINT
 # ============================================================
-
 
 if __name__ == "__main__":
     main()
+    
