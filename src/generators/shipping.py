@@ -28,8 +28,14 @@ from __future__ import annotations
 
 import csv
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from pathlib import Path
+
+from working_time import (
+    add_working_duration,
+    is_working_day,
+    load_capacity_by_date,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -40,6 +46,14 @@ PACKING_FILE = PROCESSED_DIR / "packing.csv"
 SHIPPING_FILE = PROCESSED_DIR / "shipping.csv"
 
 RANDOM_SEED = 42
+
+# working_time.py uses the global random module (opening jitter),
+# so seed it too for reproducible output.
+random.seed(RANDOM_SEED)
+
+# Road carriers deliver on working days inside this window.
+# Air / sea shipments are not restricted.
+DELIVERY_WINDOW = (time(8, 0), time(18, 0))
 
 PREPARATION_MINUTES = (10, 45)
 
@@ -176,6 +190,7 @@ def load_packing() -> list[dict]:
         "packing_id",
         "order_id",
         "packing_type",
+        "package_type",
         "packing_area",
         "packing_station",
         "container_id",
@@ -375,6 +390,51 @@ def get_transit_hours(
     )
 
 
+def to_delivery_window(
+    arrival: datetime,
+    capacity_by_date: dict,
+    rng: random.Random,
+) -> datetime:
+    """
+    Road deliveries only happen on working days between 08:00 and
+    18:00. A shipment arriving at night, at the weekend or on a
+    public holiday is delivered at a random time on the next
+    delivery day.
+    """
+
+    start, end = DELIVERY_WINDOW
+    day = arrival.date()
+
+    if is_working_day(day, capacity_by_date):
+        if start <= arrival.time() < end:
+            return arrival
+
+        if arrival.time() < start:
+            return _random_delivery_time(day, rng)
+
+    for _ in range(30):
+        day += timedelta(days=1)
+
+        if is_working_day(day, capacity_by_date):
+            return _random_delivery_time(day, rng)
+
+    raise ValueError(
+        f"No delivery day found after {arrival}. "
+        "Check calendar.csv coverage."
+    )
+
+
+def _random_delivery_time(day, rng: random.Random) -> datetime:
+    start, end = DELIVERY_WINDOW
+    window_seconds = (
+        (end.hour - start.hour) * 3600
+    )
+
+    return datetime.combine(day, start) + timedelta(
+        seconds=rng.randint(0, window_seconds - 1)
+    )
+
+
 def generate_tracking_number(
     shipping_method: str,
     shipment_number: int,
@@ -394,7 +454,8 @@ def generate_shipping_records(
 ) -> list[dict]:
     rng = random.Random(RANDOM_SEED)
 
-    order_index = build_order_index(orders)
+    capacity_by_date = load_capacity_by_date()
+
     packing_index = build_packing_index(packing)
 
     records = []
@@ -444,12 +505,14 @@ def generate_shipping_records(
             *PREPARATION_MINUTES
         )
 
-        shipped_at = (
-            packing_completed_at
-            + timedelta(minutes=preparation_minutes)
+        # Dispatch preparation only uses working time.
+        shipped_at = add_working_duration(
+            packing_completed_at,
+            timedelta(minutes=preparation_minutes),
+            capacity_by_date,
         )
 
-        transit_hours = get_transit_hours(
+        planned_transit_hours = get_transit_hours(
             shipping_method,
             transport_mode,
             rng,
@@ -457,7 +520,22 @@ def generate_shipping_records(
 
         delivered_at = (
             shipped_at
-            + timedelta(hours=transit_hours)
+            + timedelta(hours=planned_transit_hours)
+        )
+
+        if transport_mode == "ROAD":
+            delivered_at = to_delivery_window(
+                delivered_at,
+                capacity_by_date,
+                rng,
+            )
+
+        # Actual elapsed hours, including nights / weekends.
+        transit_hours = int(
+            round(
+                (delivered_at - shipped_at).total_seconds()
+                / 3600
+            )
         )
 
         fulfillment_hours = (
@@ -480,6 +558,7 @@ def generate_shipping_records(
                 ),
                 "order_id": order_id,
                 "packing_id": pack["packing_id"],
+                "package_type": pack["package_type"],
                 "shipping_method": shipping_method,
                 "transport_mode": transport_mode,
                 "vehicle_type": vehicle_type,
@@ -552,6 +631,9 @@ def validate_shipping(
         for row in orders
     }
 
+    # Build the packing lookup once for fast validation.
+    packing_index = build_packing_index(packing)
+
     packing_order_ids = {
         row["order_id"]
         for row in packing
@@ -580,6 +662,8 @@ def validate_shipping(
     )
 
     order_index = build_order_index(orders)
+
+    capacity_by_date = load_capacity_by_date()
 
     for row in shipping:
         order_id = row["order_id"]
@@ -632,17 +716,47 @@ def validate_shipping(
             f"Invalid on-time flag for {order_id}"
         )
 
+        pack = packing_index.get(order_id)
+        assert pack is not None, (
+            f"Packing record not found for {order_id}"
+        )
+
         expected_method = determine_shipping_method(
-            next(
-                pack["packing_type"]
-                for pack in packing
-                if pack["order_id"] == order_id
-            )
+            pack["packing_type"]
         )
 
         assert row["shipping_method"] == expected_method, (
             f"Invalid shipping method for {order_id}"
         )
+
+        assert row["package_type"] == pack["package_type"], (
+            f"Invalid package type for {order_id}"
+        )
+
+        assert row["package_type"] in {
+            "BOX_201",
+            "BOX_202",
+            "BOX_203",
+            "PALLET",
+        }, (
+            f"Invalid package type for {order_id}"
+        )
+
+        if row["transport_mode"] == "ROAD":
+            assert is_working_day(
+                delivered_at.date(),
+                capacity_by_date,
+            ), (
+                f"Road delivery on a closed day for {order_id}"
+            )
+            assert (
+                DELIVERY_WINDOW[0]
+                <= delivered_at.time()
+                < DELIVERY_WINDOW[1]
+            ), (
+                f"Road delivery outside the delivery window "
+                f"for {order_id}"
+            )
 
         if row["shipping_method"] in {"PARCEL", "FREIGHT"}:
             assert row["transport_mode"] == "ROAD", (
@@ -830,6 +944,7 @@ def export_shipping(
         "shipment_id",
         "order_id",
         "packing_id",
+        "package_type",
         "shipping_method",
         "transport_mode",
         "vehicle_type",

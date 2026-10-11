@@ -3,6 +3,12 @@ import csv
 import random
 from datetime import datetime, timedelta
 
+from working_time import (
+    load_capacity_by_date,
+    snap_timestamps,
+)
+from capacity_queue import apply_hall_capacity
+
 
 # ============================================================
 # PROJECT PATHS
@@ -575,6 +581,22 @@ def generate_picking(
                     f"for product {product_id}"
                 )
 
+            # Stock left per inventory record FOR THIS ITEM.
+            # The inventory file stays a static snapshot; this only
+            # stops one location from being picked again and again
+            # after its quantity is used up.
+            stock_left = {}
+
+            for record in records:
+                if record["location_id"] not in location_index:
+                    continue
+                try:
+                    stock_left[record["inventory_id"]] = int(
+                        float(record["quantity"])
+                    )
+                except (ValueError, TypeError):
+                    continue
+
             used_inventory_ids = set()
 
             while remaining_quantity > 0:
@@ -582,14 +604,9 @@ def generate_picking(
                 available_records = [
                     record
                     for record in records
-                    if (
-                        record["location_id"]
-                        in location_index
-                    )
-                    and int(
-                        float(
-                            record["quantity"]
-                        )
+                    if stock_left.get(
+                        record["inventory_id"],
+                        0,
                     ) > 0
                 ]
 
@@ -603,11 +620,9 @@ def generate_picking(
                 sufficient = [
                     record
                     for record in available_records
-                    if int(
-                        float(
-                            record["quantity"]
-                        )
-                    ) >= remaining_quantity
+                    if stock_left[
+                        record["inventory_id"]
+                    ] >= remaining_quantity
                 ]
 
                 if sufficient:
@@ -618,42 +633,16 @@ def generate_picking(
 
                 else:
 
-                    unused_records = [
-                        record
-                        for record in available_records
-                        if (
-                            record["inventory_id"]
-                            not in used_inventory_ids
-                        )
-                    ]
-
-                    if unused_records:
-
-                        record = max(
-                            unused_records,
-                            key=lambda row: int(
-                                float(
-                                    row["quantity"]
-                                )
-                            ),
-                        )
-
-                    else:
-
-                        record = max(
-                            available_records,
-                            key=lambda row: int(
-                                float(
-                                    row["quantity"]
-                                )
-                            ),
-                        )
-
-                inventory_quantity = int(
-                    float(
-                        record["quantity"]
+                    record = max(
+                        available_records,
+                        key=lambda row: stock_left[
+                            row["inventory_id"]
+                        ],
                     )
-                )
+
+                inventory_quantity = stock_left[
+                    record["inventory_id"]
+                ]
 
                 picked_quantity = min(
                     remaining_quantity,
@@ -724,6 +713,10 @@ def generate_picking(
                 )
 
                 remaining_quantity -= picked_quantity
+
+                stock_left[
+                    record["inventory_id"]
+                ] -= picked_quantity
 
                 used_inventory_ids.add(
                     record["inventory_id"]
@@ -1130,6 +1123,7 @@ def validate_picking(
     picked_by_item = {}
 
     last_pick_datetime_by_order = {}
+    picks_after_deadline = 0
 
     # --------------------------------------------------------
     # Validate every picking record.
@@ -1327,13 +1321,9 @@ def validate_picking(
                 f"{order_id}"
             ) from exc
 
-        assert (
-            pick_datetime
-            < requested_delivery_datetime
-        ), (
-            f"Pick occurs at/after delivery deadline: "
-            f"{pick['picking_id']}"
-        )
+        # Lateness is allowed (capacity backlog); only count it.
+        if pick_datetime >= requested_delivery_datetime:
+            picks_after_deadline += 1
 
         # ----------------------------------------------------
         # Chronological order picks.
@@ -1416,6 +1406,11 @@ def validate_picking(
             f"{incomplete:,} order items "
             "are not fully picked."
         )
+
+    print(
+        f"Picks after delivery deadline: "
+        f"{picks_after_deadline:,}"
+    )
 
     print(
         "Picking validation passed."
@@ -1707,6 +1702,10 @@ def main():
     # Validation
     # --------------------------------------------------------
 
+    picking_records = schedule_picks(
+        picking_records
+    )
+
     print()
     print("Validating picking...")
 
@@ -1737,6 +1736,54 @@ def main():
     print()
     print(
         "Picking generation completed successfully."
+    )
+
+
+# ============================================================
+# WORKING TIME + HALL CAPACITY
+# ============================================================
+
+def schedule_picks(picking_records):
+    """
+    Phase 2 of picking generation.
+
+    1. Move every pick into working time (shifts, working days).
+    2. Run all picks through the hourly hall capacity queue, so
+       an overloaded hall creates a backlog.
+
+    Picks may now finish after the requested delivery deadline;
+    that lateness is intentional and flows into shipping.
+    """
+
+    capacity_by_date = load_capacity_by_date()
+
+    by_order = {}
+
+    for record in picking_records:
+        by_order.setdefault(
+            record["order_id"],
+            [],
+        ).append(record)
+
+    for records in by_order.values():
+        snapped = snap_timestamps(
+            [
+                datetime.fromisoformat(
+                    record["pick_datetime"]
+                )
+                for record in records
+            ],
+            capacity_by_date,
+        )
+
+        for record, timestamp in zip(records, snapped):
+            record["pick_datetime"] = timestamp.isoformat(
+                timespec="seconds"
+            )
+
+    return apply_hall_capacity(
+        picking_records,
+        capacity_by_date,
     )
 
 

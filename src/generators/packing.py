@@ -3,6 +3,13 @@ import csv
 import random
 from datetime import datetime, timedelta
 
+from working_time import (
+    add_working_duration,
+    is_open,
+    load_capacity_by_date,
+    next_working_datetime,
+)
+
 
 # ============================================================
 # PROJECT PATHS
@@ -39,6 +46,15 @@ SMALL_ARTICLE_MAX = 4
 LARGE_ARTICLE_MIN = 5
 
 LARGE_PACKAGE_MAX_WEIGHT_KG = 30.0
+
+# Synthetic package categories. Actual dimensions for boxes 201/202/203
+# will be added after physical measurement.
+PACKAGE_TYPES = [
+    "BOX_201",
+    "BOX_202",
+    "BOX_203",
+    "PALLET",
+]
 
 
 # ============================================================
@@ -464,67 +480,193 @@ def determine_packing_area(
 # STATION ASSIGNMENT
 # ============================================================
 
-def assign_station(
-    packing_type,
-    station_counters,
-):
+def build_station_profiles():
     """
-    Round-robin station assignment.
+    Build synthetic station capacity profiles.
 
-    SMALL_PACKAGE:
-        Hall 1 Klein Packen
-
-    LARGE_PACKAGE:
-        Hall 1 + Hall 3 Groß Packen
-
-    PALLET_SHIPMENT:
-        Hall 1 large / pallet stations
+    The values represent relative processing capacity, not measured
+    real-world performance. They intentionally create realistic
+    operational variation between stations instead of assigning an
+    identical number of orders to every station.
     """
+
+    profiles = {}
+
+    kp_capacity = {
+        "H1-KP-01": 1.05,
+        "H1-KP-02": 0.95,
+        "H1-KP-03": 1.00,
+        "H1-KP-04": 1.10,
+        "H1-KP-05": 0.90,
+    }
+
+    gp_h1_capacity = {
+        "H1-GP-01": 1.05,
+        "H1-GP-02": 0.95,
+        "H1-GP-03": 1.00,
+        "H1-GP-04": 1.10,
+        "H1-GP-05": 0.92,
+        "H1-GP-06": 1.03,
+        "H1-GP-07": 0.97,
+        "H1-GP-08": 1.08,
+        "H1-GP-09": 0.90,
+    }
+
+    gp_h3_capacity = {
+        "H3-GP-01": 0.95,
+        "H3-GP-02": 1.05,
+    }
+
+    for station, factor in kp_capacity.items():
+        profiles[station] = {
+            "capacity_factor": factor,
+            "nominal_capacity_per_hour": 24.0 * factor,
+        }
+
+    for station, factor in gp_h1_capacity.items():
+        profiles[station] = {
+            "capacity_factor": factor,
+            "nominal_capacity_per_hour": 10.0 * factor,
+        }
+
+    for station, factor in gp_h3_capacity.items():
+        profiles[station] = {
+            "capacity_factor": factor,
+            "nominal_capacity_per_hour": 9.0 * factor,
+        }
+
+    return profiles
+
+
+def get_eligible_stations(packing_type):
+    """Return stations that can process the packing type."""
 
     if packing_type == "SMALL_PACKAGE":
+        return SMALL_PACKING_STATIONS_HALL_1
 
-        stations = (
-            SMALL_PACKING_STATIONS_HALL_1
-        )
-
-        key = "SMALL"
-
-    elif packing_type == "LARGE_PACKAGE":
-
-        stations = (
+    if packing_type == "LARGE_PACKAGE":
+        return (
             LARGE_PACKING_STATIONS_HALL_1
             + LARGE_PACKING_STATIONS_HALL_3
         )
 
-        key = "LARGE"
+    if packing_type == "PALLET_SHIPMENT":
+        return LARGE_PACKING_STATIONS_HALL_1
 
+    raise ValueError(
+        f"Unknown packing type: {packing_type}"
+    )
+
+
+def assign_station(
+    packing_type,
+    station_profiles,
+):
+    """
+    Assign a packing station using station capacity.
+
+    Assignment is weighted by the synthetic station capacity profile.
+    This creates controlled workload variation while keeping the
+    distribution operationally plausible.
+    """
+
+    stations = get_eligible_stations(
+        packing_type
+    )
+
+    weights = [
+        station_profiles[station]["capacity_factor"]
+        for station in stations
+    ]
+
+    return random.choices(
+        stations,
+        weights=weights,
+        k=1,
+    )[0]
+
+
+def determine_package_type(
+    packing_type,
+    article_count,
+    order_weight_kg,
+    total_quantity,
+):
+    """
+    Determine synthetic package size/type.
+
+    BOX_201 = small box
+    BOX_202 = medium box
+    BOX_203 = large box
+    PALLET  = pallet shipment
+
+    Actual box dimensions are intentionally not invented here.
+    """
+
+    if packing_type == "PALLET_SHIPMENT":
+        return "PALLET"
+
+    if packing_type == "SMALL_PACKAGE":
+        if (
+            order_weight_kg <= 8
+            and article_count <= 2
+            and total_quantity <= 12
+        ):
+            return "BOX_201"
+
+        if (
+            order_weight_kg <= 18
+            and article_count <= 3
+        ):
+            return "BOX_202"
+
+        return "BOX_203"
+
+    if packing_type == "LARGE_PACKAGE":
+        if (
+            order_weight_kg <= 15
+            and total_quantity <= 40
+        ):
+            return "BOX_202"
+
+        return "BOX_203"
+
+    raise ValueError(
+        f"Unknown packing type: {packing_type}"
+    )
+
+
+def calculate_workload_units(
+    article_count,
+    total_quantity,
+    order_weight_kg,
+    container_count,
+    packing_type,
+):
+    """
+    Calculate a synthetic packing workload score.
+
+    This is not a measured physical unit. It is an analytical workload
+    metric used to compare stations fairly when orders differ in size,
+    quantity and complexity.
+    """
+
+    workload = (
+        article_count * 1.5
+        + total_quantity * 0.08
+        + order_weight_kg * 0.12
+        + container_count * 2.0
+    )
+
+    if packing_type == "LARGE_PACKAGE":
+        workload *= 1.20
     elif packing_type == "PALLET_SHIPMENT":
+        workload *= 1.75
 
-        stations = (
-            LARGE_PACKING_STATIONS_HALL_1
-        )
-
-        key = "PALLET"
-
-    else:
-
-        raise ValueError(
-            f"Unknown packing type: {packing_type}"
-        )
-
-    counter = station_counters[
-        key
-    ]
-
-    station = stations[
-        counter % len(stations)
-    ]
-
-    station_counters[
-        key
-    ] += 1
-
-    return station
+    return round(
+        max(workload, 1.0),
+        2,
+    )
 
 
 # ============================================================
@@ -697,180 +839,169 @@ def generate_packing_timeline(
     latest_pick_datetime,
     requested_delivery_datetime,
     packing_type,
+    article_count,
+    total_quantity,
+    order_weight_kg,
+    container_count,
+    station_capacity_factor,
 ):
     """
-    Generate a packing timeline.
+    Generate a PROVISIONAL packing timeline.
 
-    Normal orders use the configured operational delay and
-    duration.
+    Start = latest pick + a small delay. Duration depends on the
+    order and the station speed. The real timestamps (working
+    hours, waiting for a busy station) are set afterwards by
+    schedule_packing(), which needs all orders at once.
 
-    Tight-deadline orders use a compressed synthetic timeline:
-    packing starts immediately after the latest pick and the
-    packing duration is reduced to fit strictly before the
-    delivery deadline.
-
-    This is necessary because the dataset contains historical
-    orders where the latest pick can be very close to the
-    requested delivery deadline.
+    The delivery deadline is no longer enforced here: if picking
+    and packing are slow, the order is late, and shipping reports
+    it. requested_delivery_datetime is kept in the signature so
+    existing calls keep working.
     """
 
-    # --------------------------------------------------------
-    # Validate the available window.
-    # --------------------------------------------------------
-
-    available_seconds = (
-        requested_delivery_datetime
-        - latest_pick_datetime
-    ).total_seconds()
-
-    if available_seconds <= 0:
-        raise ValueError(
-            f"Invalid packing window. "
-            f"Latest pick: "
-            f"{latest_pick_datetime.isoformat()}, "
-            f"Delivery deadline: "
-            f"{requested_delivery_datetime.isoformat()}, "
-            f"Available seconds: "
-            f"{available_seconds:.0f}"
-        )
-
-    # --------------------------------------------------------
-    # Generate the normal packing duration.
-    # --------------------------------------------------------
-
-    normal_duration_minutes = random.randint(
+    base_duration = random.randint(
         *PACKING_DURATION_MINUTES
     )
 
-    if (
-        packing_type
-        == "PALLET_SHIPMENT"
-    ):
+    complexity_minutes = (
+        article_count * 0.8
+        + total_quantity * 0.02
+        + order_weight_kg * 0.03
+        + container_count * 1.5
+    )
 
-        normal_duration_minutes += random.randint(
+    if packing_type == "LARGE_PACKAGE":
+        complexity_minutes += 4
+
+    elif packing_type == "PALLET_SHIPMENT":
+        complexity_minutes += random.randint(
             *PALLET_EXTRA_DURATION_MINUTES
         )
 
-    normal_duration_seconds = (
-        normal_duration_minutes * 60
+    duration_minutes = (
+        base_duration
+        + complexity_minutes
+    ) / max(
+        station_capacity_factor,
+        0.50,
     )
 
-    # --------------------------------------------------------
-    # Normal operational timeline.
-    # --------------------------------------------------------
-
-    normal_delay_minutes = random.randint(
-        *PACKING_START_DELAY_MINUTES
+    duration_minutes = max(
+        2.0,
+        min(
+            duration_minutes,
+            90.0,
+        ),
     )
 
-    normal_start = (
+    start = (
         latest_pick_datetime
         + timedelta(
-            minutes=normal_delay_minutes
+            minutes=random.randint(
+                *PACKING_START_DELAY_MINUTES
+            )
         )
     )
-
-    normal_completion = (
-        normal_start
-        + timedelta(
-            seconds=normal_duration_seconds
-        )
-    )
-
-    if (
-        normal_completion
-        < requested_delivery_datetime
-    ):
-
-        return (
-            normal_start,
-            normal_completion,
-        )
-
-    # --------------------------------------------------------
-    # Tight-deadline timeline.
-    #
-    # We must not move packing before the latest pick.
-    # Instead, compress the packing operation.
-    #
-    # Example:
-    #
-    # latest pick     03:46:23
-    # deadline        03:47:23
-    #
-    # available       60 seconds
-    #
-    # packing starts  03:46:23
-    # packing ends    03:47:22
-    # --------------------------------------------------------
-
-    compressed_start = (
-        latest_pick_datetime
-    )
-
-    # Always leave at least one second before the delivery
-    # deadline because validation requires:
-    #
-    # packing_completed_at < requested_delivery_datetime
-    #
-    max_duration_seconds = int(
-        available_seconds
-    ) - 1
-
-    if max_duration_seconds < 1:
-        raise ValueError(
-            f"No valid time remains for packing before "
-            f"delivery deadline. "
-            f"Latest pick: "
-            f"{latest_pick_datetime.isoformat()}, "
-            f"Delivery deadline: "
-            f"{requested_delivery_datetime.isoformat()}, "
-            f"Available seconds: "
-            f"{available_seconds:.0f}"
-        )
-
-    # Use the normal duration whenever possible.
-    # Otherwise compress it to the available window.
-    compressed_duration_seconds = min(
-        normal_duration_seconds,
-        max_duration_seconds,
-    )
-
-    compressed_completion = (
-        compressed_start
-        + timedelta(
-            seconds=compressed_duration_seconds
-        )
-    )
-
-    # --------------------------------------------------------
-    # Final safety checks.
-    # --------------------------------------------------------
-
-    if (
-        compressed_completion
-        <= compressed_start
-    ):
-        raise ValueError(
-            "Packing duration must be positive."
-        )
-
-    if (
-        compressed_completion
-        >= requested_delivery_datetime
-    ):
-        raise ValueError(
-            f"Packing timeline could not be resolved. "
-            f"Packing completion: "
-            f"{compressed_completion.isoformat()}, "
-            f"Delivery deadline: "
-            f"{requested_delivery_datetime.isoformat()}"
-        )
 
     return (
-        compressed_start,
-        compressed_completion,
+        start,
+        start + timedelta(
+            seconds=int(duration_minutes * 60)
+        ),
     )
+
+
+# ============================================================
+# WORKING TIME + STATION QUEUE
+# ============================================================
+
+_CAPACITY_BY_DATE = None
+
+
+def get_capacity_by_date():
+    """Working days from calendar.csv (loaded once)."""
+
+    global _CAPACITY_BY_DATE
+
+    if _CAPACITY_BY_DATE is None:
+        _CAPACITY_BY_DATE = load_capacity_by_date()
+
+    return _CAPACITY_BY_DATE
+
+
+def schedule_packing(packing_records):
+    """
+    Phase 2 of packing generation.
+
+    Every station packs one order at a time. Orders are handled in
+    the order they become ready (latest pick + delay, moved into
+    working time). If the station is still busy, the order waits.
+    Working time (shifts, weekends, holidays) does not count as
+    packing time.
+
+    Modifies packing_started_at / packing_completed_at in place.
+    """
+
+    capacity_by_date = get_capacity_by_date()
+
+    jobs = []
+
+    for record in packing_records:
+        provisional_start = datetime.fromisoformat(
+            record["packing_started_at"]
+        )
+        provisional_end = datetime.fromisoformat(
+            record["packing_completed_at"]
+        )
+
+        jobs.append(
+            (
+                next_working_datetime(
+                    provisional_start,
+                    capacity_by_date,
+                ),
+                record["packing_id"],
+                record,
+                provisional_end - provisional_start,
+            )
+        )
+
+    jobs.sort(
+        key=lambda job: (job[0], job[1])
+    )
+
+    station_free_at = {}
+
+    for ready_at, _, record, duration in jobs:
+        station = record["packing_station"]
+
+        start = next_working_datetime(
+            max(
+                ready_at,
+                station_free_at.get(
+                    station,
+                    ready_at,
+                ),
+            ),
+            capacity_by_date,
+        )
+
+        end = add_working_duration(
+            start,
+            duration,
+            capacity_by_date,
+        )
+
+        station_free_at[station] = end
+
+        record["packing_started_at"] = start.isoformat(
+            timespec="seconds"
+        )
+        record["packing_completed_at"] = end.isoformat(
+            timespec="seconds"
+        )
+
+    return packing_records
 
 
 # ============================================================
@@ -922,11 +1053,7 @@ def generate_packing_records(
         )
     )
 
-    station_counters = {
-        "SMALL": 0,
-        "LARGE": 0,
-        "PALLET": 0,
-    }
+    station_profiles = build_station_profiles()
 
     packing_records = []
 
@@ -1081,9 +1208,20 @@ def generate_packing_records(
 
         station = assign_station(
             packing_type=packing_type,
-            station_counters=(
-                station_counters
-            ),
+            station_profiles=station_profiles,
+        )
+
+        station_capacity_factor = station_profiles[
+            station
+        ][
+            "capacity_factor"
+        ]
+
+        package_type = determine_package_type(
+            packing_type=packing_type,
+            article_count=article_count,
+            order_weight_kg=order_weight_kg,
+            total_quantity=total_quantity,
         )
 
         # ----------------------------------------------------
@@ -1096,6 +1234,14 @@ def generate_packing_records(
             container_type,
         ) = determine_packing_container(
             picks
+        )
+
+        workload_units = calculate_workload_units(
+            article_count=article_count,
+            total_quantity=total_quantity,
+            order_weight_kg=order_weight_kg,
+            container_count=len(containers),
+            packing_type=packing_type,
         )
 
         container_scan = True
@@ -1144,6 +1290,11 @@ def generate_packing_records(
                 requested_delivery_datetime
             ),
             packing_type=packing_type,
+            article_count=article_count,
+            total_quantity=total_quantity,
+            order_weight_kg=order_weight_kg,
+            container_count=len(containers),
+            station_capacity_factor=station_capacity_factor,
         )
 
         # ----------------------------------------------------
@@ -1166,6 +1317,15 @@ def generate_packing_records(
                 ),
                 "packing_station": (
                     station
+                ),
+                "station_capacity_factor": (
+                    station_capacity_factor
+                ),
+                "package_type": (
+                    package_type
+                ),
+                "workload_units": (
+                    workload_units
                 ),
                 "container_id": (
                     primary_container
@@ -1228,7 +1388,9 @@ def generate_packing_records(
                 f"{len(orders):,} packing records..."
             )
 
-    return packing_records
+    return schedule_packing(
+        packing_records
+    )
 
 
 # ============================================================
@@ -1359,6 +1521,8 @@ def validate_packing(
     ), (
         "Duplicate packing records detected."
     )
+
+    packing_after_deadline = 0
 
     # --------------------------------------------------------
     # Validate every packing record.
@@ -1514,6 +1678,44 @@ def validate_packing(
             )
 
         # ----------------------------------------------------
+        # Package type and workload.
+        # ----------------------------------------------------
+
+        package_type = row[
+            "package_type"
+        ]
+
+        assert package_type in PACKAGE_TYPES, (
+            f"Invalid package type for {order_id}: "
+            f"{package_type}"
+        )
+
+        if packing_type == "PALLET_SHIPMENT":
+            assert package_type == "PALLET", (
+                f"Invalid pallet package type for {order_id}"
+            )
+        else:
+            assert package_type in {
+                "BOX_201",
+                "BOX_202",
+                "BOX_203",
+            }, (
+                f"Invalid box package type for {order_id}"
+            )
+
+        assert float(
+            row["station_capacity_factor"]
+        ) > 0, (
+            f"Invalid station capacity factor for {order_id}"
+        )
+
+        assert float(
+            row["workload_units"]
+        ) > 0, (
+            f"Invalid workload units for {order_id}"
+        )
+
+        # ----------------------------------------------------
         # Packing area and station.
         # ----------------------------------------------------
 
@@ -1629,13 +1831,15 @@ def validate_packing(
             ]
         )
 
-        assert (
-            packing_completed_at
-            < requested_delivery_datetime
+        # Lateness is allowed (queue / backlog); only count it.
+        if packing_completed_at >= requested_delivery_datetime:
+            packing_after_deadline += 1
+
+        assert is_open(
+            packing_started_at
         ), (
-            f"Packing finishes after "
-            f"delivery deadline for "
-            f"{order_id}"
+            f"Packing starts outside working hours "
+            f"for {order_id}"
         )
 
         # ----------------------------------------------------
@@ -1677,6 +1881,11 @@ def validate_packing(
             )
             > 0
         )
+
+    print(
+        f"Packing completed after delivery deadline: "
+        f"{packing_after_deadline:,}"
+    )
 
     print(
         "Packing validation passed."
@@ -1759,10 +1968,12 @@ def print_packing_summary(
     )
 
     # --------------------------------------------------------
-    # Station utilization.
+    # Station workload summary.
     # --------------------------------------------------------
 
     station_counts = {}
+    station_workload = {}
+    station_weight = {}
 
     for row in packing_records:
 
@@ -1770,14 +1981,33 @@ def print_packing_summary(
             "packing_station"
         ]
 
-        station_counts[
-            station
-        ] = (
+        station_counts[station] = (
             station_counts.get(
                 station,
                 0,
+            ) + 1
+        )
+
+        station_workload[station] = (
+            station_workload.get(
+                station,
+                0.0,
+            ) + float(
+                row[
+                    "workload_units"
+                ]
             )
-            + 1
+        )
+
+        station_weight[station] = (
+            station_weight.get(
+                station,
+                0.0,
+            ) + float(
+                row[
+                    "order_weight_kg"
+                ]
+            )
         )
 
     print()
@@ -1794,7 +2024,41 @@ def print_packing_summary(
 
         print(
             f"{station:<18} "
-            f"{station_counts[station]:,}"
+            f"orders={station_counts[station]:,}  "
+            f"workload={station_workload[station]:,.1f}  "
+            f"weight={station_weight[station]:,.0f} kg"
+        )
+
+    print()
+    print(
+        "Package Types"
+    )
+    print(
+        "-------------"
+    )
+
+    package_counts = {}
+
+    for row in packing_records:
+
+        package_type = row[
+            "package_type"
+        ]
+
+        package_counts[package_type] = (
+            package_counts.get(
+                package_type,
+                0,
+            ) + 1
+        )
+
+    for package_type in sorted(
+        package_counts
+    ):
+
+        print(
+            f"{package_type:<18} "
+            f"{package_counts[package_type]:,}"
         )
 
 
@@ -1812,6 +2076,9 @@ def export_packing(
         "packing_type",
         "packing_area",
         "packing_station",
+        "station_capacity_factor",
+        "package_type",
+        "workload_units",
         "container_id",
         "container_type",
         "container_count",

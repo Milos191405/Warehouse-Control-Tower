@@ -349,19 +349,22 @@ def validate_picking(
         if item_id not in last_pick or dt > last_pick[item_id]:
             last_pick[item_id] = dt
 
+    incomplete_items = 0
     for item_id, item in item_index.items():
-        assert picked_by_item.get(item_id, 0) == int(
-            float(item["requested_quantity"])
-        ), (
-            f"Picked quantity mismatch for "
-            f"{item_id}: expected "
-            f"{item['requested_quantity']}, got "
-            f"{picked_by_item.get(item_id, 0)}"
+        requested = int(float(item["requested_quantity"]))
+        picked = picked_by_item.get(item_id, 0)
+        assert requested > 0, f"Invalid requested quantity for {item_id}"
+        assert 0 <= picked <= requested, (
+            f"Picked quantity outside valid range for {item_id}: "
+            f"requested={requested}, picked={picked}"
         )
+        if picked < requested:
+            incomplete_items += 1
 
-    assert set(
-        row["order_id"] for row in picking
-    ) == order_ids
+    # Picking is allowed to cover only orders/items with available stock.
+    # Missing picks mean the item remains open for replenishment.
+    assert {row["order_id"] for row in picking}.issubset(order_ids)
+    print(f"Order items not fully picked: {incomplete_items:,}")
 
 
 def validate_packing(
@@ -408,8 +411,10 @@ def validate_packing(
         for row in packing
     }
 
-    assert len(packing) == len(orders)
-    assert set(packing_by_order) == order_ids
+    assert len(packing_by_order) == len(packing), (
+        "Multiple packing records for the same order are not supported."
+    )
+    assert set(packing_by_order).issubset(order_ids)
 
     unique_ids(
         packing,
@@ -417,13 +422,21 @@ def validate_packing(
         "Packing",
     )
 
-    for order in orders:
-        order_id = order["order_id"]
-        row = packing_by_order[order_id]
+    order_index = {row["order_id"]: row for row in orders}
 
+    for order_id, row in packing_by_order.items():
         assert row["container_scan"].upper() == "TRUE"
-        assert row["order_complete"].upper() == "TRUE"
-        assert row["packing_status"] == "PACKED"
+
+        is_complete = row["order_complete"].upper() == "TRUE"
+        if is_complete:
+            assert row["packing_status"] == "PACKED"
+        else:
+            assert row["packing_status"] in {"PARTIALLY_PACKED", "NOT_PACKED"}
+
+        # Do not accept packing records for orders with no picking activity.
+        assert picking_by_order.get(order_id), (
+            f"Packing exists without picking records for {order_id}"
+        )
 
         article_count = int(
             row["article_count"]
@@ -446,9 +459,7 @@ def validate_packing(
             assert row["packing_area"] == "PALLET_PACKING"
 
         latest_pick = max(
-            parse_datetime(
-                pick["pick_datetime"]
-            )
+            parse_datetime(pick["pick_datetime"])
             for pick in picking_by_order[order_id]
         )
 
@@ -460,13 +471,8 @@ def validate_packing(
             row["packing_completed_at"]
         )
 
-        deadline = parse_datetime(
-            order["requested_delivery_datetime"]
-        )
-
         assert packing_start >= latest_pick
         assert packing_end > packing_start
-        assert packing_end < deadline
 
 
 def validate_shipping(
@@ -531,8 +537,12 @@ def validate_shipping(
         for row in shipping
     }
 
-    assert shipping_order_ids == order_ids
-    assert len(shipping) == len(orders)
+    assert shipping_order_ids.issubset(order_ids)
+    assert len(shipping_order_ids) == len(shipping), (
+        "Multiple shipments for the same order are not supported."
+    )
+
+    packing_by_id = {row["packing_id"]: row for row in packing}
 
     order_index = {
         row["order_id"]: row
@@ -543,6 +553,9 @@ def validate_shipping(
         order_id = row["order_id"]
 
         assert row["packing_id"] in packing_ids
+        packing_row = packing_by_id[row["packing_id"]]
+        assert packing_row["order_complete"].upper() == "TRUE"
+        assert packing_row["packing_status"] == "PACKED"
 
         packing_completed = parse_datetime(
             row["packing_completed_at"]
@@ -699,7 +712,7 @@ def print_summary(
     print(f"Late:           {late:,}")
     print(
         f"On-time rate:   "
-        f"{on_time / len(shipping) * 100:.2f}%"
+        f"{(on_time / len(shipping) * 100) if shipping else 0:.2f}%"
     )
 
     print()

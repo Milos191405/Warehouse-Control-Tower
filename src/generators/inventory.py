@@ -44,6 +44,9 @@ INVENTORY_ID_START = 1
 
 STATUS = "AVAILABLE"
 
+# Stable timestamp for a reproducible opening-stock snapshot.
+INITIAL_STOCK_TIMESTAMP = "2026-01-01T06:00:00"
+
 STORAGE_TYPES = {
     "PALLET_STORAGE",
     "BOX_STORAGE",
@@ -92,16 +95,13 @@ def load_products():
             f"Product master missing fields: {missing}"
         )
 
-    product_ids = [
-        row["product_id"].strip()
-        for row in products
-        if row["product_id"].strip()
-    ]
+    product_ids = [(row.get("product_id") or "").strip() for row in products]
+
+    if any(not value or value.lower() in {"none", "nan", "<na>"} for value in product_ids):
+        raise ValueError("Product master contains missing product_id values.")
 
     if len(product_ids) != len(set(product_ids)):
-        raise ValueError(
-            "Duplicate product_id values in product master."
-        )
+        raise ValueError("Duplicate product_id values in product master.")
 
     return products
 
@@ -136,12 +136,18 @@ def load_locations():
             f"Locations missing fields: {missing}"
         )
 
+    location_ids = []
     for row in locations:
+        location_id = (row.get("location_id") or "").strip()
+        if not location_id:
+            raise ValueError("Locations contain a missing location_id.")
+        location_ids.append(location_id)
+
         if row["storage_type"] not in STORAGE_TYPES:
-            raise ValueError(
-                f"Invalid storage_type: "
-                f"{row['storage_type']}"
-            )
+            raise ValueError(f"Invalid storage_type: {row['storage_type']}")
+
+    if len(location_ids) != len(set(location_ids)):
+        raise ValueError("Duplicate location_id values in locations.")
 
     return locations
 
@@ -226,12 +232,6 @@ def generate_inventory(
         len(locations) * TARGET_OCCUPANCY
     )
 
-    if target_count > len(products):
-        raise ValueError(
-            "Not enough products to assign unique products "
-            "to all occupied locations."
-        )
-
     pallet_locations = [
         row
         for row in locations
@@ -284,15 +284,16 @@ def generate_inventory(
 
     # Use product_id directly as the FK.
     product_pool = [
-        row["product_id"].strip()
+        (row.get("product_id") or "").strip()
         for row in products
-        if row["product_id"].strip()
+        if (row.get("product_id") or "").strip()
     ]
 
-    selected_products = random.sample(
-        product_pool,
-        len(selected_locations),
-    )
+    if not product_pool:
+        raise ValueError("No valid product_id values are available.")
+
+    # The same SKU may be stored in multiple locations.
+    selected_products = random.choices(product_pool, k=len(selected_locations))
 
     inventory = []
 
@@ -337,11 +338,7 @@ def generate_inventory(
                     number,
                 ),
                 "status": STATUS,
-                "last_updated": (
-                    datetime.now().isoformat(
-                        timespec="seconds"
-                    )
-                ),
+                "last_updated": INITIAL_STOCK_TIMESTAMP,
             }
         )
 
@@ -358,14 +355,15 @@ def validate_inventory(
     locations,
 ):
     product_ids = {
-        row["product_id"]
+        (row.get("product_id") or "").strip()
         for row in products
     }
 
-    location_ids = {
-        row["location_id"]
+    location_by_id = {
+        (row.get("location_id") or "").strip(): row
         for row in locations
     }
+    location_ids = set(location_by_id)
 
     inventory_ids = [
         row["inventory_id"]
@@ -400,9 +398,15 @@ def validate_inventory(
             f"{row['location_id']}"
         )
 
-        quantity = int(
-            float(row["quantity"])
+        source_location = location_by_id[row["location_id"]]
+        assert row["storage_type"] == source_location["storage_type"], (
+            f"Storage type mismatch at location {row['location_id']}."
         )
+        assert row["hall_id"] == source_location["hall_id"]
+        assert row["zone_nr"] == source_location["zone_nr"]
+        assert row["picking_method"] == source_location["picking_method"]
+
+        quantity = int(float(row["quantity"]))
 
         assert quantity > 0
 

@@ -1087,25 +1087,25 @@ if __name__ == "__main__":
 
     locations = generate_all_locations()
 
-    hall_1 = generate_hall_1_locations()
-    hall_2 = generate_hall_2_locations()
-    hall_3 = generate_hall_3_locations()
+    # Derive hall totals from the single generated dataset.
+    hall_counts = {
+        hall_id: sum(
+            1 for location in locations
+            if location["hall_id"] == hall_id
+        )
+        for hall_id in (1, 2, 3)
+    }
 
     print()
     print("Warehouse Location Generator")
     print("=============================")
 
     print()
-    print("Hall 1:")
-    print(f"  Locations: {len(hall_1)}")
-
-    print()
-    print("Hall 2:")
-    print(f"  Locations: {len(hall_2)}")
-
-    print()
-    print("Hall 3:")
-    print(f"  Locations: {len(hall_3)}")
+    for hall_id in (1, 2, 3):
+        print(f"Hall {hall_id}:")
+        print(f"  Locations: {hall_counts[hall_id]:,}")
+        if hall_id != 3:
+            print()
 
     print()
     print("-----------------------------")

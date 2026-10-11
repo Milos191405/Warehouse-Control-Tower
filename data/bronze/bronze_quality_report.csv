@@ -1,0 +1,9 @@
+﻿dataset,source_rows,bronze_rows,whitespace_issues,missing_values,category_issues,duplicate_rows
+product_master.csv,37500,37687,7500,561,621,187
+locations.csv,24180,24300,1446,240,240,120
+inventory.csv,16926,17010,1183,252,252,84
+orders.csv,50000,50250,3500,1000,248,250
+order_items.csv,134462,135134,12096,2016,0,672
+picking.csv,435185,437360,39159,6525,6505,2175
+packing.csv,50000,50250,8000,500,746,250
+shipping.csv,50000,50250,11000,1750,1735,250
