@@ -1,746 +1,116 @@
-# Warehouse Control Tower
-
-A data analytics and warehouse operations project based on a
-synthetic simulation of a distribution center in Heidelberg, Germany.
+# Warehouse Control Tower — Complete Project Documentation
 
 ## Project Overview
 
-This project simulates warehouse operations from inventory and
-order creation to picking, packing, and shipping.
+This project simulates warehouse operations end to end—from business calendar and storage topology setup to inventory, order creation, picking, packing, and shipping.
 
-The goal is to build a realistic data platform and analytics
-solution that can be used to monitor warehouse performance,
-inventory, picking, packing, and order fulfillment.
-
-The project is developed incrementally, starting with warehouse
-modeling and synthetic data generation and progressing toward
-PostgreSQL, SQL analytics, Power BI, and Microsoft Fabric.
+The goal is to build a realistic data engineering and analytics platform for monitoring warehouse performance, capacity utilization, order fulfillment, picking, packing, and shipping operations, progressing incrementally from Python data generation to PostgreSQL (`Bronze → Silver → Gold`), SQL analytics, and Power BI reporting.
 
 ## Project Goals
 
-- Model a realistic warehouse structure
-- Generate synthetic warehouse data with Python
-- Use a real-world product catalog as the product source
-- Build a relational data model
-- Store and transform data using PostgreSQL
-- Build analytical SQL queries and KPIs
-- Create a Power BI Warehouse Control Tower
-- Integrate Microsoft Fabric
-- Analyze warehouse performance and operational bottlenecks
-- Demonstrate an end-to-end analytics workflow
+- Model a realistic three-hall warehouse topology and operational workflow
+- Generate deterministic, relationally consistent synthetic warehouse data with Python
+- Use publicly available ABB product catalog data as the reference product master
+- Build a layered relational data model in PostgreSQL (`Bronze → Silver → Gold`)
+- Implement SQL data quality checks, transformations, KPIs, and bottleneck analysis
+- Build a Power BI Warehouse Control Tower and plan extended analytics and cloud workflows
 
-## Project Background
+## Project Background & Data Disclaimer
 
-The warehouse model is based on a real-world industrial warehouse
-environment and uses its storage capacity as a reference for the
-synthetic simulation.
+The warehouse structure and operational workflows are modeled after an industrial distribution center environment (with **24,180 storage positions** across three halls).
 
-The project does not include company systems, customer data, order
-data, credentials, or other confidential business data.
+- **Product Reference Data:** Product master attributes are derived from publicly available ABB article master data (product identifiers, descriptions, weights, and catalog reference attributes).
+- **Synthetic Operations:** All customer records, orders, order items, inventory quantities, timestamps, picking/packing queues, and shipping/delivery records are synthetically generated.
+- **No Confidential Data:** No company systems, proprietary credentials, live ERP/WMS exports, or confidential business data are included.
 
-All operational data generated for the project is synthetic.
+## Warehouse Topology & Equipment
 
-## Warehouse
+The simulated warehouse consists of three halls with **24,180 storage positions** across 12 storage zones:
 
-The simulated warehouse consists of three halls:
+- **Hall 1 (`18,500` locations, Zones 01–07):** Pallet storage (`FORKLIFT`, `PICKING_CART`) and box storage (`VERTICAL_LIFT`, `PICKING_CART`). Includes packing stations `H1-GP-01..09` and `H1-KP-01..05`.
+- **Hall 2 (`4,240` locations, Zones 08–10):** Box storage (`VERTICAL_LIFT`) and pallet storage (`FORKLIFT`, `PICKING_CART`).
+- **Hall 3 (`1,440` locations, Zones 11–12):** Pallet storage (`PICKING_CART`, `STAPLER`). Includes packing stations `H3-GP-01..02`.
 
-- Hall 1
-- Hall 2
-- Hall 3
+Packing stations are modeled as operational resources separate from the **24,180** storage positions.
 
-Total warehouse storage capacity currently modeled:
+## Calendar, Shifts & Capacity Queues
 
-**24,180 storage positions**
+- **Business Calendar (`business_calendar.py`):** Covers `2024-01-01` to `2027-03-31` (`1,186` days) with Baden-Württemberg public holidays, school holiday capacity factors, and seasonal demand weights.
+- **Shift Schedule (`working_time.py`):** Two shifts (`EARLY`: `06:30–14:45`, `LATE`: `14:45–22:45`) with configured shift breaks (`SHIFT_BREAKS`) and working-day calculations.
+- **Hourly Capacity Queue (`capacity_queue.py` & `picking.py`):** Enforces hall-level hourly picking limits and shift windows so operational queues and peak-period delays emerge realistically without exceeding capacity rules.
 
-The warehouse model includes:
-
-- High racks
-- Low picking areas
-- Vertical lifts
-- Handwagen picking areas
-- Cart picking
-- Stapler picking
-- Packing stations
-- Boxes and containers
-- Carts
-- Pallets
-
-## Warehouse Processes
-
-The main simulated process is:
+## End-to-End Operational Flow & Packing Rules
 
 ```text
-Order
-  ↓
-Picking
-  ↓
-Packing
-  ↓
-Shipping
+Order → Picking → Packing → Shipping
 ```
 
-The project also models:
+Packing classification follows weight and line-count rules:
 
-- Storage locations
-- Inventory
-- Products
-- Customers
-- Orders
-- Order items
-- Boxes and containers
-- Carts
-- Pallets
-- Picking operations
-- Packing operations
-- Shipping operations
+- `> 30.0 kg`: `PALLET_SHIPMENT` (`PALLET` / `PALLET_FREIGHT`)
+- `<= 30.0 kg` with `1–4` lines and `<= 10.0 kg`: `SMALL_PACKAGE` (_Kleinpacken_, boxes `BOX_201`–`BOX_203`)
+- `<= 30.0 kg` (remaining orders up to 30 kg): `LARGE_PACKAGE` (_Großpacken_, boxes `BOX_201`–`BOX_203`)
 
-## Picking
+## Current Validated Dataset (`110,000` Orders)
 
-Warehouse locations are scanned during picking.
-
-Depending on the storage area, products may be stored in
-individual boxes with barcodes.
-
-Products can exist in multiple warehouse locations.
-
-The same product may therefore be stored in several locations
-and containers.
-
-Picking can be performed using:
-
-- Hand carts
-- Staplers
-- Pallets
-- Boxes / containers
-
-The project models different picking scenarios, including
-cart-based picking and pallet-based picking.
-
-## Containers
-
-Physical warehouse containers are modeled separately from
-warehouse storage locations.
-
-The project includes:
-
-- Boxes
-- Carts
-- Pallets
-
-Containers can have their own identifiers and barcodes.
-
-A picking container can be associated with an order and its
-picked items during the picking process.
-
-## Packing Rules
-
-Current simplified packing rules:
-
-- 1–4 articles → Small Package / Klein Packen
-- 5+ articles and ≤ 30 kg → Large Package / Groß Packen
-- > 30 kg → Pallet Shipment
-
-The packing process verifies the contents of the picking container
-and whether the order has been completely picked.
-
-## Packing Stations
-
-The warehouse model includes packing stations used for different
-packing processes.
-
-### Hall 1
-
-- 5 Klein Packen stations
-- 9 large / pallet packing stations
-
-### Hall 3
-
-- 2 Groß Packen stations
-
-Packing stations are modeled as operational resources and are not
-included in the 24,180 warehouse storage positions.
-
-## Technology Stack
-
-### Data Generation
-
-- Python
-- Pandas
-
-### Database
-
-- PostgreSQL
-- SQL
-
-### Business Intelligence
-
-- Microsoft Power BI
-- DAX
-
-### Cloud / Data Platform
-
-- Microsoft Fabric
-
-### Development
-
-- Git
-- GitHub
-
-## Project Architecture
-
-The planned project architecture is:
-
-```text
-ABB Product Catalog
-        ↓
-Python Data Generation
-        ↓
-Synthetic Warehouse Data
-        ↓
-PostgreSQL
-        ↓
-SQL Transformations
-        ↓
-Analytical Layer
-        ↓
-Power BI
-        ↓
-Warehouse Control Tower
-```
-
-Microsoft Fabric will be introduced as a later stage of the
-project.
+| Dataset              |   Records | Key Characteristics                                                               |
+| :------------------- | --------: | :-------------------------------------------------------------------------------- |
+| `calendar.csv`       |   `1,186` | Daily calendar (`2024-01-01` to `2027-03-31`)                                     |
+| `locations.csv`      |  `24,180` | 3 halls, 12 zones, box & pallet locations                                         |
+| `product_master.csv` |  `37,500` | Standardized product catalog                                                      |
+| `inventory.csv`      |  `16,926` | Opening warehouse stock across locations                                          |
+| `customers.csv`      |     `500` | Simulated customer master records                                                 |
+| `orders.csv`         | `110,000` | `34,000` (2024), `40,000` (2025), `36,000` (2026); `84.5%` boxes, `15.5%` pallets |
+| `order_items.csv`    | `259,425` | `2.36` avg lines/order; `40.5%` single-piece lines (`quantity = 1`)               |
+| `picking.csv`        | `261,053` | `0` hourly capacity violations                                                    |
+| `packing.csv`        | `110,000` | `64,750` `SMALL_PACKAGE`, `28,210` `LARGE_PACKAGE`, `17,040` `PALLET_SHIPMENT`    |
+| `shipping.csv`       | `110,000` | `102,633` on-time (**93.30%**), `7,367` late                                      |
 
 ## Project Structure
 
-The project is organized into separate layers for data generation,
-database development, analytics, visualization, testing, and
-documentation.
-
-Current project structure:
-
 ```text
-warehouse-control-tower/
-│
+Warehouse Control Tower/
 ├── data/
-│   ├── source/
-│   │   └── abb/
-│   ├── raw/
-│   ├── processed/
-│   └── exports/
-│
+│   ├── source/abb/          # Source ABB catalog spreadsheets
+│   ├── bronze/              # Bronze ingestion / staging files
+│   └── processed/           # Generated CSV datasets & diagnostics/
 ├── src/
-│   ├── __init__.py
-│   ├── README.md
-│   ├── config.py
-│   ├── generator.py
-│   ├── validation.py
-│   │
-│   └── generators/
-│       ├── __init__.py
-│       ├── locations.py
-│       ├── products.py
-│       ├── customers.py
-│       ├── orders.py
-│       ├── order_items.py
-│       ├── containers.py
-│       ├── picking.py
-│       ├── packing.py
-│       └── shipping.py
-│
-├── sql/
-│   ├── README.md
-│   ├── 01_schema/
-│   ├── 02_staging/
-│   ├── 03_transformations/
-│   ├── 04_analytics/
-│   └── 05_kpis/
-│
-├── notebooks/
-│   ├── 01_data_quality.ipynb
-│   ├── 02_exploratory_analysis.ipynb
-│   └── 03_kpi_validation.ipynb
-│
-├── powerbi/
-│   ├── README.md
-│   ├── screenshots/
-│   └── documentation/
-│
-├── fabric/
-│   └── README.md
-│
-├── tests/
-│   ├── __init__.py
-│   ├── test_generators.py
-│   └── test_validation.py
-│
+│   ├── generators/          # Simulation modules & picking_capacity_diagnostics.py
+│   └── pipeline/            # bronze.py and validation.py
+├── sql/                     # PostgreSQL Bronze / Silver / Gold & analytics scripts
+├── notebooks/               # Data quality and exploratory notebooks
+├── powerbi/                 # Power BI report files and assets
 ├── documentation/
 │   └── complete_project_documentation.md
-│
-├── README.md
-├── requirements.txt
-└── LICENSE
+├── run_pipeline.py          # Master pipeline & validation runner
+├── requirements.txt         # Python dependencies
+└── README.md                # Project overview
 ```
 
-## Development Roadmap
-
-The project is divided into several development phases.
-
-### Phase 1 — Warehouse Modeling
-
-Define and model the physical warehouse structure.
-
-- [x] Define warehouse
-- [x] Define three halls
-- [x] Define storage areas
-- [x] Calculate storage capacity
-- [x] Define storage location concept
-- [x] Define location ID concept
-- [ ] Implement location generator
-- [ ] Generate location master
-- [ ] Validate generated locations
-
-Current modeled capacity:
-
-**24,180 storage positions**
-
-### Phase 2 — Python Data Generation
-
-Build a modular Python data generation pipeline.
-
-Planned components:
-
-- Location generation
-- Product processing
-- Customer generation
-- Order generation
-- Order item generation
-- Inventory generation
-- Container generation
-- Picking simulation
-- Packing simulation
-- Shipping simulation
-- Data validation
-
-### Phase 3 — Product & Inventory Modeling
-
-Build the product and inventory layer.
-
-- [ ] Import ABB product catalog
-- [ ] Inspect source structure
-- [ ] Clean product data
-- [ ] Standardize product fields
-- [ ] Create product master
-- [ ] Model packaging information
-- [ ] Generate inventory
-- [ ] Assign products to locations
-- [ ] Support multi-location inventory
-- [ ] Model box-level inventory
-- [ ] Validate inventory
-
-### Phase 4 — Order & Picking Simulation
-
-Simulate customer orders and warehouse picking.
-
-- [ ] Generate customers
-- [ ] Generate orders
-- [ ] Generate order items
-- [ ] Generate picking tasks
-- [ ] Simulate location scanning
-- [ ] Simulate box scanning
-- [ ] Simulate cart picking
-- [ ] Simulate stapler picking
-- [ ] Simulate pallet picking
-- [ ] Track picked quantities
-- [ ] Track incomplete orders
-- [ ] Track picking timestamps
-- [ ] Calculate picking duration
-
-### Phase 5 — Packing & Shipping Simulation
-
-Simulate the final stages of the warehouse process.
-
-#### Packing
-
-- [ ] Implement packing rules
-- [ ] Assign orders to packing stations
-- [ ] Simulate container scanning
-- [ ] Verify order completeness
-- [ ] Simulate Klein Packen
-- [ ] Simulate Groß Packen
-- [ ] Simulate pallet packing
-- [ ] Track packing timestamps
-- [ ] Track packing queues
-
-#### Shipping
-
-- [ ] Generate shipments
-- [ ] Assign shipping methods
-- [ ] Generate shipment timestamps
-- [ ] Track shipment status
-- [ ] Calculate fulfillment time
-- [ ] Calculate shipping performance
-
-### Phase 6 — PostgreSQL
-
-Move the generated data into a relational database.
-
-- [ ] Create PostgreSQL database
-- [ ] Create database schemas
-- [ ] Create tables
-- [ ] Define primary keys
-- [ ] Define foreign keys
-- [ ] Load raw data
-- [ ] Create staging layer
-- [ ] Create transformation layer
-- [ ] Create analytical layer
-- [ ] Add indexes
-- [ ] Add constraints
-- [ ] Validate database
-
-### Phase 7 — SQL Analytics
-
-Build the analytical layer using SQL.
-
-#### Inventory Analytics
-
-- [ ] Total inventory
-- [ ] Inventory by product
-- [ ] Inventory by hall
-- [ ] Inventory by location
-- [ ] Inventory by storage type
-- [ ] Products stored in multiple locations
-- [ ] Low-stock analysis
-- [ ] Storage utilization
-
-#### Order Analytics
-
-- [ ] Orders per day
-- [ ] Orders by status
-- [ ] Orders by priority
-- [ ] Average order size
-- [ ] Order backlog
-
-#### Picking Analytics
-
-- [ ] Picking volume
-- [ ] Items picked
-- [ ] Picking duration
-- [ ] Picks per hour
-- [ ] Incomplete orders
-- [ ] Picking workload by hall
-- [ ] Picking workload by picker type
-
-#### Packing Analytics
-
-- [ ] Orders ready for packing
-- [ ] Orders packed
-- [ ] Packing throughput
-- [ ] Packing queue
-- [ ] Packing workload by station
-- [ ] Average packing time
-
-#### Shipping Analytics
-
-- [ ] Shipments per day
-- [ ] Shipping volume
-- [ ] Fulfillment time
-- [ ] Shipment status
-- [ ] Shipping performance
-
-### Phase 8 — Power BI
-
-Build the Warehouse Control Tower.
-
-Planned dashboard pages:
-
-#### Warehouse Overview
-
-- Total Inventory
-- Storage Utilization
-- Open Orders
-- Orders in Picking
-- Orders Ready for Packing
-- Orders Packed
-- Orders Shipped
-
-#### Inventory
-
-- Inventory by Hall
-- Inventory by Storage Type
-- Inventory by Product
-- Inventory by Location
-- Multi-location Products
-- Low Stock
-- Stock Distribution
-
-#### Picking
-
-- Picking Volume
-- Picking Performance
-- Picks by Hall
-- Picks by Picker Type
-- Incomplete Orders
-- Average Picking Time
-- Picking Workload
-
-#### Packing
-
-- Packing Queue
-- Orders Packed
-- Packing Throughput
-- Packing Station Utilization
-- Average Packing Time
-- Incomplete Orders
-
-#### Shipping
-
-- Shipment Volume
-- Shipment Status
-- Fulfillment Time
-- Daily Shipping Performance
-
-### Phase 9 — Microsoft Fabric
-
-Extend the project into a modern cloud data platform.
-
-Planned components:
-
-- [ ] Fabric workspace
-- [ ] Lakehouse
-- [ ] Data ingestion
-- [ ] Data pipelines
-- [ ] Data transformation
-- [ ] Data engineering
-- [ ] Semantic model
-- [ ] Power BI integration
-
-Planned architecture:
-
-```text
-Source Data
-    ↓
-Fabric Data Pipeline
-    ↓
-Lakehouse
-    ↓
-Transformation
-    ↓
-Semantic Model
-    ↓
-Power BI
-```
-
-### Phase 10 — Advanced Analytics
-
-Advanced analytics will be considered after the core data platform
-and reporting solution are complete.
-
-Potential future features:
-
-- Demand forecasting
-- Inventory optimization
-- ABC analysis
-- Slotting optimization
-- Pick-path optimization
-- Anomaly detection
-- Operational alerts
-- Predictive analytics
-- Machine learning
-
-## Planned KPIs
-
-The final Warehouse Control Tower will contain operational KPIs
-covering:
-
-### Warehouse
-
-- Storage Utilization
-- Inventory Volume
-- Inventory Distribution
-- Active Locations
-
-### Orders
-
-- Open Orders
-- Orders in Picking
-- Orders Ready for Packing
-- Orders Packed
-- Orders Shipped
-
-### Picking
-
-- Picking Volume
-- Picking Duration
-- Picks per Hour
-- Incomplete Orders
-- Picking Workload
-
-### Packing
-
-- Packing Queue
-- Packing Throughput
-- Packing Station Utilization
-- Average Packing Time
-
-### Shipping
-
-- Shipment Volume
-- Fulfillment Time
-- Shipment Status
-- Shipping Performance
-
-## Data Quality
-
-Data quality is an important part of the project.
-
-Validation checks will include:
-
-- Duplicate location IDs
-- Invalid location IDs
-- Missing products
-- Invalid quantities
-- Negative inventory
-- Duplicate barcodes
-- Orders without order items
-- Picking quantities exceeding available inventory
-- Orders marked complete with missing items
-- Invalid packing assignments
-- Invalid shipment status transitions
-
-Example:
-
-```text
-Expected storage positions: 24,180
-Generated storage positions: 24,180
-
-Status: PASS
-```
-
-## Testing
-
-The Python data generation layer will include automated tests.
-
-Planned tests include:
-
-```text
-test_location_count()
-test_location_id_format()
-test_unique_location_ids()
-test_valid_sides()
-test_valid_levels()
-test_positive_inventory()
-test_order_item_quantities()
-```
-
-The goal is to ensure that generated data follows the defined
-warehouse structure and business rules.
-
-## Development Approach
-
-The project is intentionally developed step by step.
-
-The goal is not to generate a large amount of random data immediately.
-
-Instead, the development follows this sequence:
-
-```text
-Understand the Warehouse
-        ↓
-Model the Warehouse
-        ↓
-Generate Valid Data
-        ↓
-Validate the Data
-        ↓
-Store the Data
-        ↓
-Transform the Data
-        ↓
-Analyze the Data
-        ↓
-Build Dashboards
-        ↓
-Add Data Engineering
-        ↓
-Add Advanced Analytics
-```
-
-Business rules are defined before they are implemented in code.
-
-The synthetic data should behave like realistic warehouse data
-rather than being completely random.
-
-## Project Status
-
-🚧 **In Development**
+## Development Roadmap & Status
 
 ### Completed
 
-- [x] Warehouse structure defined
-- [x] Three halls defined
-- [x] Storage areas defined
-- [x] Storage capacity calculated
-- [x] Picking processes documented
-- [x] Packing rules documented
-- [x] Multi-location inventory concept defined
-- [x] Box / cart / pallet concept defined
+- [x] Three-hall warehouse topology (`24,180` storage positions) and packing station model
+- [x] Baden-Württemberg business calendar and shift/capacity simulation (`working_time.py`, `capacity_queue.py`)
+- [x] Full Python generation pipeline (`run_pipeline.py`) and cross-dataset validation (`src/pipeline/validation.py`)
+- [x] Picking capacity and delivery timeliness diagnostic reports (`picking_capacity_diagnostics.py`)
 
-### In Progress
+### In Progress / Next Steps
 
-- [x] Location generator
-- [x] Location master
-- [ ] Warehouse data model
+- [ ] **Bronze Layer (`src/pipeline/bronze.py` & `sql/`):** Controlled data quality anomalies, staging files, and raw PostgreSQL tables
+- [ ] **Silver Layer (`sql/`):** Data type casting, trimming/normalization, deduplication, referential integrity checks, and DQ logging
+- [ ] **Gold Layer (`sql/`):** Star-schema dimensions and facts, operational KPIs, and bottleneck views
+- [ ] **Power BI & Extended Analytics:** Control Tower dashboards, DAX measures, and future Microsoft Fabric / advanced analytics exploration
 
-### Planned
+## Planned KPIs & Analytics Areas
 
-- Product master
-- Inventory generation
-- Order generation
-- Picking simulation
-- Packing simulation
-- Shipping simulation
-- PostgreSQL
-- SQL analytics
-- Power BI
-- Microsoft Fabric
+- **Warehouse & Inventory:** Storage utilization, inventory volume by hall/zone/storage type, multi-location products, low-stock checks
+- **Orders & Fulfillment:** Daily order volume, priority breakdown, average order size, order-to-delivery lead time, on-time delivery rate
+- **Picking:** Picking volume, picked quantity, picks per hour, hall/equipment workload, shift/queue bottleneck analysis
+- **Packing:** Orders packed, package/station workload (`H1-KP`, `H1-GP`, `H3-GP`), carton (`<= 30 kg`) vs. pallet (`> 30 kg`) split
+- **Shipping:** Shipment volume, carrier/transport mode mix, transit and fulfillment duration, late delivery root causes
 
-## Documentation
+## Data Source & Disclaimer
 
-This file contains the complete project documentation.
-
-The main project README provides a shorter overview for portfolio
-and GitHub presentation.
-
-Additional phase-specific documentation can be added as the project
-develops.
-
-## Data Source
-
-The product master is based on publicly available ABB product
-master data downloaded from the official ABB website.
-
-The ABB source data is used as the product reference for the
-synthetic warehouse simulation, including product identifiers,
-descriptions, packaging information, weights, and dimensions.
-
-The operational warehouse data generated in this project is
-synthetic and is not based on ABB operational or transactional data.
-
-Source:
-
-- [ABB Article Master Data](https://new.abb.com/low-voltage/de/artikelstammdaten/niederspannung)
-
-## Disclaimer
-
-This project is a synthetic simulation created for educational,
-portfolio, data analytics, and data engineering purposes.
-
-The warehouse structure and operational processes are modeled based
-on a real-world warehouse scenario, while the generated operational
-data is synthetic.
-
-No confidential operational data is included in the project.
-
-The project does not represent actual company performance or actual
-production warehouse data.
+The product master reference is based on publicly available ABB article master data. All operational warehouse data—including customers, orders, order items, inventory quantities, timestamps, picking/packing operations, and shipping records—is synthetically generated for educational, portfolio, and data engineering purposes.
