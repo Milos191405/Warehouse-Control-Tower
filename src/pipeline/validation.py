@@ -1,27 +1,16 @@
-"""
-Warehouse Control Tower - Full Pipeline Validation
-
-Validates the complete synthetic operational data flow:
-
-Product -> Location -> Inventory -> Order -> Order Item
-       -> Picking -> Packing -> Shipping -> Delivery
-
-This script validates referential integrity, quantities, timestamps,
-packing rules, shipping rules, and delivery performance.
-
-It does not modify any input files.
-"""
-
 from __future__ import annotations
 
 import csv
+import os
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
+PROCESSED_DIR = Path(
+    os.environ.get("WCT_PROCESSED_DIR", PROJECT_ROOT / "data" / "processed")
+)
 
 PRODUCTS_FILE = PROCESSED_DIR / "product_master.csv"
 LOCATIONS_FILE = PROCESSED_DIR / "locations.csv"
@@ -58,9 +47,7 @@ def require_columns(
         raise AssertionError(f"{name} is empty.")
 
     missing = required - set(rows[0])
-    assert not missing, (
-        f"{name} missing columns: {missing}"
-    )
+    assert not missing, f"{name} missing columns: {missing}"
 
 
 def unique_ids(
@@ -159,15 +146,8 @@ def validate_inventory(
         "Inventory",
     )
 
-    product_ids = {
-        row["product_id"]
-        for row in products
-    }
-
-    location_ids = {
-        row["location_id"]
-        for row in locations
-    }
+    product_ids = {row["product_id"] for row in products}
+    location_ids = {row["location_id"] for row in locations}
 
     unique_ids(
         inventory,
@@ -177,13 +157,11 @@ def validate_inventory(
 
     for row in inventory:
         assert row["product_id"] in product_ids, (
-            f"Inventory references unknown product "
-            f"{row['product_id']}"
+            f"Inventory references unknown product {row['product_id']}"
         )
 
         assert row["location_id"] in location_ids, (
-            f"Inventory references unknown location "
-            f"{row['location_id']}"
+            f"Inventory references unknown location {row['location_id']}"
         )
 
         assert int(float(row["quantity"])) > 0
@@ -229,23 +207,16 @@ def validate_orders(
         "Order Items",
     )
 
-    product_ids = {
-        row["product_id"]
-        for row in products_global
-    }
+    product_ids = {row["product_id"] for row in products_global}
 
     for order in orders:
-        order_datetime = parse_datetime(
-            order["order_datetime"]
-        )
-
+        order_datetime = parse_datetime(order["order_datetime"])
         delivery_datetime = parse_datetime(
             order["requested_delivery_datetime"]
         )
 
         assert delivery_datetime > order_datetime, (
-            f"Invalid delivery deadline for "
-            f"{order['order_id']}"
+            f"Invalid delivery deadline for {order['order_id']}"
         )
 
         assert int(float(order["total_items"])) > 0
@@ -255,17 +226,14 @@ def validate_orders(
 
     for item in order_items:
         assert item["order_id"] in order_ids, (
-            f"Order item references unknown order "
-            f"{item['order_id']}"
+            f"Order item references unknown order {item['order_id']}"
         )
 
         assert item["product_id"] in product_ids, (
-            f"Order item references unknown product "
-            f"{item['product_id']}"
+            f"Order item references unknown product {item['product_id']}"
         )
 
         quantity = int(float(item["requested_quantity"]))
-
         assert quantity > 0
 
         item_counts[item["order_id"]] += 1
@@ -301,20 +269,9 @@ def validate_picking(
         "Picking",
     )
 
-    order_ids = {
-        row["order_id"]
-        for row in orders
-    }
-
-    item_index = {
-        row["order_item_id"]: row
-        for row in order_items
-    }
-
-    inventory_index = {
-        row["inventory_id"]: row
-        for row in inventory_global
-    }
+    order_ids = {row["order_id"] for row in orders}
+    item_index = {row["order_item_id"]: row for row in order_items}
+    inventory_index = {row["inventory_id"]: row for row in inventory_global}
 
     unique_ids(
         picking,
@@ -361,8 +318,6 @@ def validate_picking(
         if picked < requested:
             incomplete_items += 1
 
-    # Picking is allowed to cover only orders/items with available stock.
-    # Missing picks mean the item remains open for replenishment.
     assert {row["order_id"] for row in picking}.issubset(order_ids)
     print(f"Order items not fully picked: {incomplete_items:,}")
 
@@ -381,6 +336,7 @@ def validate_packing(
             "packing_type",
             "packing_area",
             "packing_station",
+            "package_type",
             "container_id",
             "container_type",
             "container_count",
@@ -396,20 +352,13 @@ def validate_packing(
         "Packing",
     )
 
-    order_ids = {
-        row["order_id"]
-        for row in orders
-    }
+    order_ids = {row["order_id"] for row in orders}
 
     picking_by_order = defaultdict(list)
-
     for row in picking:
         picking_by_order[row["order_id"]].append(row)
 
-    packing_by_order = {
-        row["order_id"]: row
-        for row in packing
-    }
+    packing_by_order = {row["order_id"]: row for row in packing}
 
     assert len(packing_by_order) == len(packing), (
         "Multiple packing records for the same order are not supported."
@@ -422,8 +371,6 @@ def validate_packing(
         "Packing",
     )
 
-    order_index = {row["order_id"]: row for row in orders}
-
     for order_id, row in packing_by_order.items():
         assert row["container_scan"].upper() == "TRUE"
 
@@ -433,43 +380,33 @@ def validate_packing(
         else:
             assert row["packing_status"] in {"PARTIALLY_PACKED", "NOT_PACKED"}
 
-        # Do not accept packing records for orders with no picking activity.
         assert picking_by_order.get(order_id), (
             f"Packing exists without picking records for {order_id}"
         )
 
-        article_count = int(
-            row["article_count"]
-        )
+        article_count = int(row["article_count"])
+        weight = float(row["order_weight_kg"])
 
-        weight = float(
-            row["order_weight_kg"]
-        )
-
-        if article_count <= 4:
-            assert row["packing_type"] == "SMALL_PACKAGE"
-            assert row["packing_area"] == "KLEIN_PACKEN"
-
-        elif weight <= 30:
-            assert row["packing_type"] == "LARGE_PACKAGE"
-            assert row["packing_area"] == "GROSS_PACKEN"
-
-        else:
+        if weight > 30.0:
             assert row["packing_type"] == "PALLET_SHIPMENT"
             assert row["packing_area"] == "PALLET_PACKING"
+            assert row["package_type"] == "PALLET"
+        elif article_count <= 4 and weight <= 10.0:
+            assert row["packing_type"] == "SMALL_PACKAGE"
+            assert row["packing_area"] == "KLEIN_PACKEN"
+            assert row["package_type"] in {"BOX_201", "BOX_202", "BOX_203"}
+        else:
+            assert row["packing_type"] == "LARGE_PACKAGE"
+            assert row["packing_area"] == "GROSS_PACKEN"
+            assert row["package_type"] in {"BOX_201", "BOX_202", "BOX_203"}
 
         latest_pick = max(
             parse_datetime(pick["pick_datetime"])
             for pick in picking_by_order[order_id]
         )
 
-        packing_start = parse_datetime(
-            row["packing_started_at"]
-        )
-
-        packing_end = parse_datetime(
-            row["packing_completed_at"]
-        )
+        packing_start = parse_datetime(row["packing_started_at"])
+        packing_end = parse_datetime(row["packing_completed_at"])
 
         assert packing_start >= latest_pick
         assert packing_end > packing_start
@@ -508,15 +445,8 @@ def validate_shipping(
         "Shipping",
     )
 
-    order_ids = {
-        row["order_id"]
-        for row in orders
-    }
-
-    packing_ids = {
-        row["packing_id"]
-        for row in packing
-    }
+    order_ids = {row["order_id"] for row in orders}
+    packing_ids = {row["packing_id"] for row in packing}
 
     unique_ids(
         shipping,
@@ -532,10 +462,7 @@ def validate_shipping(
 
     assert len(tracking_numbers) == len(shipping)
 
-    shipping_order_ids = {
-        row["order_id"]
-        for row in shipping
-    }
+    shipping_order_ids = {row["order_id"] for row in shipping}
 
     assert shipping_order_ids.issubset(order_ids)
     assert len(shipping_order_ids) == len(shipping), (
@@ -543,11 +470,7 @@ def validate_shipping(
     )
 
     packing_by_id = {row["packing_id"]: row for row in packing}
-
-    order_index = {
-        row["order_id"]: row
-        for row in orders
-    }
+    order_index = {row["order_id"]: row for row in orders}
 
     for row in shipping:
         order_id = row["order_id"]
@@ -557,24 +480,13 @@ def validate_shipping(
         assert packing_row["order_complete"].upper() == "TRUE"
         assert packing_row["packing_status"] == "PACKED"
 
-        packing_completed = parse_datetime(
-            row["packing_completed_at"]
-        )
-
-        shipped_at = parse_datetime(
-            row["shipped_at"]
-        )
-
-        delivered_at = parse_datetime(
-            row["delivered_at"]
-        )
+        packing_completed = parse_datetime(row["packing_completed_at"])
+        shipped_at = parse_datetime(row["shipped_at"])
+        delivered_at = parse_datetime(row["delivered_at"])
 
         deadline = parse_datetime(
-            order_index[order_id][
-                "requested_delivery_datetime"
-            ]
+            order_index[order_id]["requested_delivery_datetime"]
         )
-
         order_datetime = parse_datetime(
             order_index[order_id]["order_datetime"]
         )
@@ -583,28 +495,18 @@ def validate_shipping(
         assert delivered_at > shipped_at
         assert delivered_at > order_datetime
 
-        expected_on_time = (
-            delivered_at <= deadline
-        )
-
+        expected_on_time = delivered_at <= deadline
         assert (
             row["on_time_delivery"].upper()
             == str(expected_on_time).upper()
         )
 
         assert row["origin_country"] == "Germany"
-
-        assert row["transport_mode"] in {
-            "ROAD",
-            "AIR",
-            "SEA",
-        }
-
+        assert row["transport_mode"] in {"ROAD", "AIR", "SEA"}
         assert row["vehicle_type"].strip()
         assert row["carrier"].strip()
         assert row["destination_country"].strip()
         assert row["destination_region"].strip()
-
         assert row["shipment_status"] == "DELIVERED"
 
 
@@ -618,35 +520,12 @@ def validate_cross_dataset_references(
     packing: list[dict],
     shipping: list[dict],
 ) -> None:
-    product_ids = {
-        row["product_id"]
-        for row in products
-    }
-
-    location_ids = {
-        row["location_id"]
-        for row in locations
-    }
-
-    inventory_ids = {
-        row["inventory_id"]
-        for row in inventory
-    }
-
-    order_ids = {
-        row["order_id"]
-        for row in orders
-    }
-
-    order_item_ids = {
-        row["order_item_id"]
-        for row in order_items
-    }
-
-    packing_ids = {
-        row["packing_id"]
-        for row in packing
-    }
+    product_ids = {row["product_id"] for row in products}
+    location_ids = {row["location_id"] for row in locations}
+    inventory_ids = {row["inventory_id"] for row in inventory}
+    order_ids = {row["order_id"] for row in orders}
+    order_item_ids = {row["order_item_id"] for row in order_items}
+    packing_ids = {row["packing_id"] for row in packing}
 
     for row in inventory:
         assert row["product_id"] in product_ids
@@ -685,7 +564,6 @@ def print_summary(
         row["on_time_delivery"].upper() == "TRUE"
         for row in shipping
     )
-
     late = len(shipping) - on_time
 
     print()
