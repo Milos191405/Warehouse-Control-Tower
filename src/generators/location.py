@@ -1,5 +1,6 @@
 from pathlib import Path
 import csv
+import os
 
 
 # ============================================================
@@ -7,13 +8,7 @@ import csv
 # ============================================================
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
-OUTPUT_DIR = (
-    PROJECT_ROOT
-    / "data"
-    / "processed"
-)
-
+OUTPUT_DIR = Path(os.getenv("WCT_PROCESSED_DIR", PROJECT_ROOT / "data" / "processed"))
 OUTPUT_FILE = OUTPUT_DIR / "locations.csv"
 
 
@@ -908,6 +903,34 @@ def validate_locations(locations):
             f"{location.get('location_id')}: "
             f"{missing_fields}"
         )
+
+    # Coordinate values must be valid positive integers.
+    for location in locations:
+        for field in ("hall_id", "zone_nr", "position", "level", "side"):
+            value = location[field]
+            assert isinstance(value, int) and not isinstance(value, bool) and value > 0, (
+                f"Invalid {field} in {location['location_id']}: {value!r}"
+            )
+        assert location["side"] in (1, 2), f"Invalid side in {location['location_id']}"
+        assert location["storage_type"] in valid_storage_types, (
+            f"Invalid storage_type in {location['location_id']}"
+        )
+        assert location["picking_method"] in valid_picking_methods, (
+            f"Invalid picking_method in {location['location_id']}"
+        )
+        assert location["location_id"] == (
+            f"H{location['hall_id']}-{location['zone_nr']:03d}-"
+            f"{location['position']:03d}-{location['level']:02d}-{location['side']}"
+        ), f"Location ID does not match its coordinates: {location['location_id']}"
+
+    # Each zone must belong to exactly one hall.
+    zone_halls = {}
+    for location in locations:
+        zone = location["zone_nr"]
+        hall = location["hall_id"]
+        if zone in zone_halls:
+            assert zone_halls[zone] == hall, f"Zone {zone} appears in multiple halls"
+        zone_halls[zone] = hall
 
     # --------------------------------------------------------
     # Hall counts

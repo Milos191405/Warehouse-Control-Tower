@@ -16,21 +16,34 @@ Note:
 """
 
 import csv
+import math
+import os
 import random
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
-
-# ============================================================
-# CONFIGURATION
-# ============================================================
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-CALENDAR_FILE = PROJECT_ROOT / "data" / "processed" / "calendar.csv"
+PROCESSED_DIR = Path(
+    os.getenv("WCT_PROCESSED_DIR", PROJECT_ROOT / "data" / "processed")
+)
+CALENDAR_FILE = PROCESSED_DIR / "calendar.csv"
 
 SHIFTS = {
-    "EARLY": (time(6, 0), time(14, 0)),
-    "LATE": (time(14, 0), time(22, 0)),
+    "EARLY": (time(6, 30), time(14, 45)),
+    "LATE": (time(14, 45), time(22, 45)),
+}
+
+# Exact break window is configured for the late shift.
+# The early shift has a 45-minute break, but its exact timing is not
+# modeled because it has not been specified.
+SHIFT_BREAKS = {
+    "EARLY": (
+        (time(9, 0), time(9, 15)),
+        (time(12, 15), time(12, 45)),
+    ),
+    "LATE": (
+        (time(17, 0), time(17, 30)),
+    ),
 }
 
 OPEN_TIME = min(start for start, _ in SHIFTS.values())
@@ -115,15 +128,18 @@ def load_capacity_by_date(calendar_file=CALENDAR_FILE):
             )
 
         for row in reader:
-            day = date.fromisoformat(row["date"])
-            capacity = float(
-                row["warehouse_capacity_multiplier"]
-            )
-
-            if capacity < 0:
+            try:
+                day = date.fromisoformat(row["date"])
+                capacity = float(row["warehouse_capacity_multiplier"])
+            except (TypeError, ValueError) as exc:
                 raise ValueError(
-                    f"Negative warehouse capacity on {day}: "
-                    f"{capacity}"
+                    f"Invalid calendar row: {row!r}"
+                ) from exc
+
+            if not math.isfinite(capacity) or not 0.0 <= capacity <= 1.0:
+                raise ValueError(
+                    f"Capacity multiplier must be finite and between 0 and 1; "
+                    f"got {capacity!r} on {day}."
                 )
 
             if day in capacity_by_date:
@@ -135,6 +151,23 @@ def load_capacity_by_date(calendar_file=CALENDAR_FILE):
 
     if not capacity_by_date:
         raise ValueError("calendar.csv contains no calendar rows.")
+
+    ordered_days = sorted(capacity_by_date)
+    expected_days = (ordered_days[-1] - ordered_days[0]).days + 1
+    if len(ordered_days) != expected_days:
+        present = set(ordered_days)
+        missing = []
+        cursor = ordered_days[0]
+        while cursor <= ordered_days[-1]:
+            if cursor not in present:
+                missing.append(cursor.isoformat())
+                if len(missing) == 5:
+                    break
+            cursor += timedelta(days=1)
+        raise ValueError(
+            "calendar.csv has missing dates; first missing dates: "
+            + ", ".join(missing)
+        )
 
     return capacity_by_date
 
@@ -172,21 +205,32 @@ def validate_calendar_coverage(
 # ============================================================
 
 def is_open(dt):
-    """Return True when dt falls inside one of the configured shifts."""
-    current_time = dt.time()
-
-    return any(
-        start <= current_time < end
-        for start, end in SHIFTS.values()
-    )
-
-
-def shift_name(dt):
-    """Return EARLY, LATE, or OFF for a timestamp."""
+    """Return True inside a shift, excluding configured break windows."""
     current_time = dt.time()
 
     for name, (start, end) in SHIFTS.items():
         if start <= current_time < end:
+            if any(
+                pause_start <= current_time < pause_end
+                for pause_start, pause_end in SHIFT_BREAKS.get(name, ())
+            ):
+                return False
+            return True
+
+    return False
+
+
+def shift_name(dt):
+    """Return EARLY, LATE, or OFF for a timestamp; breaks count as OFF."""
+    current_time = dt.time()
+
+    for name, (start, end) in SHIFTS.items():
+        if start <= current_time < end:
+            if any(
+                pause_start <= current_time < pause_end
+                for pause_start, pause_end in SHIFT_BREAKS.get(name, ())
+            ):
+                return "OFF"
             return name
 
     return "OFF"
@@ -232,8 +276,12 @@ def next_working_datetime(
     If dt is after closing or on a closed day, the next working
     day's opening is returned.
     """
+    if not isinstance(dt, datetime):
+        raise TypeError("dt must be a datetime instance.")
     if max_days < 0:
         raise ValueError("max_days cannot be negative.")
+    if not capacity_by_date:
+        raise ValueError("capacity_by_date cannot be empty.")
 
     day = dt.date()
 
@@ -249,6 +297,14 @@ def next_working_datetime(
         if offset == 0:
             if is_open(dt):
                 return dt
+
+            # Resume at the end of a configured break on the same day.
+            current_time = dt.time()
+            for shift_name_, (shift_start, shift_end) in SHIFTS.items():
+                if shift_start <= current_time < shift_end:
+                    for pause_start, pause_end in SHIFT_BREAKS.get(shift_name_, ()):
+                        if pause_start <= current_time < pause_end:
+                            return datetime.combine(candidate_day, pause_end)
 
             if dt.time() < OPEN_TIME:
                 return _opening(candidate_day)
@@ -274,19 +330,13 @@ def add_working_duration(
     max_days=DEFAULT_MAX_SEARCH_DAYS,
 ):
     """
-    Add elapsed working time while respecting shift boundaries.
-
-    Closed periods, nights, weekends, and holidays do not consume
-    the supplied working duration.
-
-    Example:
-        Starting at 13:00 with a two-hour task:
-        - one hour is used until 14:00;
-        - the remaining hour continues at 14:00 if the next shift
-          starts immediately, as it does in the default configuration.
-
-    A duration of zero returns the next valid working timestamp.
+    Add productive working time, excluding configured shift breaks and
+    respecting shift boundaries, weekends, and closed calendar dates.
     """
+    if not isinstance(start_dt, datetime):
+        raise TypeError("start_dt must be a datetime instance.")
+    if not isinstance(duration, timedelta):
+        raise TypeError("duration must be a timedelta instance.")
     if duration < timedelta(0):
         raise ValueError("duration cannot be negative.")
 
@@ -295,7 +345,6 @@ def add_working_duration(
         capacity_by_date,
         max_days=max_days,
     )
-
     remaining = duration
 
     if remaining == timedelta(0):
@@ -303,39 +352,56 @@ def add_working_duration(
 
     while remaining > timedelta(0):
         day = current.date()
-
-        active_shift = next(
+        active_name = next(
             (
-                (start, end)
-                for start, end in SHIFTS.values()
-                if start <= current.time() < end
+                name for name, (shift_start, shift_end) in SHIFTS.items()
+                if shift_start <= current.time() < shift_end
             ),
             None,
         )
 
-        if active_shift is None:
+        if active_name is None:
             current = next_working_datetime(
-                current,
-                capacity_by_date,
-                max_days=max_days,
+                current, capacity_by_date, max_days=max_days
             )
             continue
 
-        _, shift_end = active_shift
+        _, shift_end = SHIFTS[active_name]
+        shift_end_dt = datetime.combine(day, shift_end)
+        pauses = [
+            (datetime.combine(day, pause_start),
+             datetime.combine(day, pause_end))
+            for pause_start, pause_end in SHIFT_BREAKS.get(active_name, ())
+        ]
 
-        available = datetime.combine(day, shift_end) - current
+        active_pause = next(
+            ((pause_start, pause_end) for pause_start, pause_end in pauses
+             if pause_start <= current < pause_end),
+            None,
+        )
+        if active_pause:
+            current = active_pause[1]
+            continue
+
+        next_pause = next(
+            ((pause_start, pause_end) for pause_start, pause_end in pauses
+             if current < pause_start < shift_end_dt),
+            None,
+        )
+        segment_end = next_pause[0] if next_pause else shift_end_dt
+        available = segment_end - current
 
         if remaining <= available:
             return current + remaining
 
         remaining -= available
 
-        # Move to the next valid working timestamp.
-        current = next_working_datetime(
-            datetime.combine(day, shift_end),
-            capacity_by_date,
-            max_days=max_days,
-        )
+        if next_pause:
+            current = next_pause[1]
+        else:
+            current = next_working_datetime(
+                shift_end_dt, capacity_by_date, max_days=max_days
+            )
 
     return current
 
@@ -390,7 +456,7 @@ def add_working_days(
     This calculates a deadline; it does not force the deadline itself
     to fall inside a warehouse shift.
     """
-    if not isinstance(days, int) or days < 0:
+    if isinstance(days, bool) or not isinstance(days, int) or days < 0:
         raise ValueError("days must be a non-negative integer.")
 
     if days == 0:

@@ -1,90 +1,168 @@
-"""
-Warehouse Control Tower - hourly hall capacity (queue)
-
-Put next to working_time.py (src/generators/).
-
-Each hall can process a limited number of pick lines per working hour.
-When more picks want the same hour, the extra ones wait for the next
-free hour (next shift, next day, after weekends and holidays). This
-creates a realistic backlog in busy periods, and late deliveries
-that are caused by capacity instead of a random number.
-
-Capacity per day = HALL_PICKS_PER_HOUR * warehouse_capacity_multiplier
-(from calendar.csv, so school holidays reduce it).
-"""
-
 import random
 from datetime import datetime, timedelta
 
-from working_time import next_working_datetime, OPEN_TIME, CLOSE_TIME
+from working_time import OPEN_TIME, next_working_datetime
 
-# Calibrated on the current dataset (~138k pick lines): about 1.6x the
-# average load per working hour (Hall 1 ~26, Hall 2 ~6, Hall 3 ~2 picks).
-# Lower the numbers for more backlog, raise them for less.
+
+# Average number of completed picking operations per hour for each hall.
+# These are operation-count capacities, not per-worker rates.
 HALL_PICKS_PER_HOUR = {
     1: 42,
     2: 10,
     3: 4,
 }
 
+PRIORITY_RANK = {
+    "URGENT": 0,
+    "HIGH": 1,
+    "NORMAL": 2,
+    "LOW": 3,
+}
+
 
 class HourlyCapacity:
-
     def __init__(self, capacity_by_date, picks_per_hour=None):
         self.capacity_by_date = capacity_by_date
-        self.picks_per_hour = picks_per_hour or HALL_PICKS_PER_HOUR
+        self.picks_per_hour = dict(
+            HALL_PICKS_PER_HOUR if picks_per_hour is None else picks_per_hour
+        )
         self.used = {}
 
+        # Cache the next hour with capacity separately for each hall.
+        # Without this cursor, every pick may rescan the same full hours,
+        # making large queues increasingly slow.
+        self.next_candidate_by_hall = {}
+
+        if not self.picks_per_hour:
+            raise ValueError("picks_per_hour cannot be empty.")
+
+        normalized = {}
+        for hall, capacity in self.picks_per_hour.items():
+            try:
+                hall_id = int(hall)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Invalid hall id: {hall!r}") from exc
+            if hall_id <= 0:
+                raise ValueError(f"Invalid hall id: {hall}")
+            if (
+                not isinstance(capacity, (int, float))
+                or isinstance(capacity, bool)
+                or capacity <= 0
+            ):
+                raise ValueError(
+                    f"Capacity for hall {hall} must be a positive number."
+                )
+            if hall_id in normalized:
+                raise ValueError(f"Duplicate hall id after normalization: {hall_id}")
+            normalized[hall_id] = float(capacity)
+        self.picks_per_hour = normalized
+
+    def _next_hour(self, timestamp):
+        next_hour = datetime(
+            timestamp.year, timestamp.month, timestamp.day, timestamp.hour
+        ) + timedelta(hours=1)
+        candidate = next_working_datetime(next_hour, self.capacity_by_date)
+
+        # Add jitter only when the candidate is exactly at the start of an hour.
+        # Normalize again so jitter cannot land inside a break or outside a shift.
+        if candidate.minute == 0 and candidate.second == 0:
+            candidate += timedelta(seconds=random.randint(0, 3599))
+            candidate = next_working_datetime(candidate, self.capacity_by_date)
+        return candidate
+
     def reserve(self, hall_id, earliest):
-        """
-        Return the first working moment >= earliest at which the hall
-        still has free capacity, and book one pick there.
-        """
-        hall = int(hall_id)
-        t = next_working_datetime(earliest, self.capacity_by_date)
+        try:
+            hall = int(hall_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid hall id: {hall_id!r}") from exc
+        if hall not in self.picks_per_hour:
+            raise ValueError(f"No hourly capacity configured for hall {hall}.")
+        if not isinstance(earliest, datetime):
+            raise TypeError("earliest must be a datetime.")
+
+        timestamp = next_working_datetime(earliest, self.capacity_by_date)
+
+        # Key optimization: if this hall already has a later candidate hour
+        # because earlier hours filled up, never scan those full hours again.
+        cached_candidate = self.next_candidate_by_hall.get(hall)
+        if cached_candidate is not None and cached_candidate > timestamp:
+            timestamp = cached_candidate
 
         while True:
-            factor = self.capacity_by_date.get(t.date(), 0.0)
-            limit = max(1, int(self.picks_per_hour[hall] * factor))
-            key = (hall, t.date(), t.hour)
+            timestamp = next_working_datetime(timestamp, self.capacity_by_date)
+            factor = float(self.capacity_by_date.get(timestamp.date(), 0.0))
+            if not 0.0 <= factor <= 1.0:
+                raise ValueError(
+                    f"Invalid capacity multiplier on {timestamp.date()}: {factor}"
+                )
 
-            if self.used.get(key, 0) < limit:
-                self.used[key] = self.used.get(key, 0) + 1
-                return t
+            if factor == 0:
+                timestamp = next_working_datetime(
+                    datetime.combine(timestamp.date() + timedelta(days=1), OPEN_TIME),
+                    self.capacity_by_date,
+                )
+                self.next_candidate_by_hall[hall] = timestamp
+                continue
 
-            next_hour = (
-                datetime(t.year, t.month, t.day, t.hour)
-                + timedelta(hours=1)
-            )
-            t = next_working_datetime(
-                next_hour, self.capacity_by_date
-            )
-            # Spread the backlog inside the hour instead of
-            # putting everything at hh:00:00.
-            if t.minute == 0 and t.second == 0:
-                t += timedelta(seconds=random.randint(0, 3599))
-                if t.time() >= CLOSE_TIME:
-                    t = next_working_datetime(
-                        t, self.capacity_by_date
-                    )
+            # If a reduced capacity rounds down to zero, this hour has no slots.
+            limit = int(self.picks_per_hour[hall] * factor)
+            if limit < 1:
+                timestamp = self._next_hour(timestamp)
+                self.next_candidate_by_hall[hall] = timestamp
+                continue
+
+            key = (hall, timestamp.date(), timestamp.hour)
+            used = self.used.get(key, 0)
+
+            if used < limit:
+                used += 1
+                self.used[key] = used
+
+                # Once an hour is full, cache the next candidate immediately.
+                # The next reservation for this hall can start there directly.
+                if used >= limit:
+                    self.next_candidate_by_hall[hall] = self._next_hour(timestamp)
+                else:
+                    self.next_candidate_by_hall[hall] = timestamp
+
+                return timestamp
+
+            timestamp = self._next_hour(timestamp)
+            self.next_candidate_by_hall[hall] = timestamp
 
 
-def apply_hall_capacity(picking_records, capacity_by_date):
-    """
-    Phase 2 of picking generation.
+def apply_hall_capacity(picking_records, capacity_by_date, order_metadata=None):
+    """Schedule picks within shift/calendar constraints and hall capacities.
 
-    Call after every record already has a 'pick_datetime' (your
-    existing per-order timeline). Reschedules all picks globally in
-    time order through the hall capacity queue and keeps the picks of
-    one order strictly increasing. Modifies the records in place.
+    Work is grouped by arrival hour. Within that hour, earlier delivery deadlines
+    take precedence, followed by URGENT/HIGH/NORMAL/LOW priority. Original pick
+    time and picking ID provide stable ordering within equal-priority groups.
     """
     queue = HourlyCapacity(capacity_by_date)
     last_by_order = {}
+    order_metadata = order_metadata or {}
 
-    ordered = sorted(
-        picking_records,
-        key=lambda r: (r["pick_datetime"], r["picking_id"]),
-    )
+    def scheduling_key(record):
+        wanted = datetime.fromisoformat(record["pick_datetime"])
+        metadata = order_metadata.get(record["order_id"], {})
+        deadline = metadata.get("deadline")
+        priority = str(metadata.get("priority", "NORMAL")).strip().upper()
+        priority_rank = PRIORITY_RANK.get(priority, PRIORITY_RANK["NORMAL"])
+        arrival_hour = wanted.replace(minute=0, second=0, microsecond=0)
+        if deadline is None:
+            deadline = wanted
+        elif isinstance(deadline, str):
+            deadline = datetime.fromisoformat(deadline)
+
+        return (
+            arrival_hour,
+            deadline,
+            priority_rank,
+            wanted,
+            record["picking_id"],
+        )
+
+    ordered = sorted(picking_records, key=scheduling_key)
 
     for record in ordered:
         wanted = datetime.fromisoformat(record["pick_datetime"])
@@ -96,7 +174,10 @@ def apply_hall_capacity(picking_records, capacity_by_date):
         scheduled = queue.reserve(record["hall_id"], wanted)
 
         if previous is not None and scheduled <= previous:
-            scheduled = previous + timedelta(seconds=1)
+            raise RuntimeError(
+                f"Capacity scheduling broke chronological order for "
+                f"order {record['order_id']}."
+            )
 
         last_by_order[record["order_id"]] = scheduled
         record["pick_datetime"] = scheduled.isoformat(timespec="seconds")

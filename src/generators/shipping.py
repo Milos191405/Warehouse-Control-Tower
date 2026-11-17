@@ -27,6 +27,7 @@ All operational shipping data is synthetic.
 from __future__ import annotations
 
 import csv
+import os
 import random
 from datetime import datetime, time, timedelta
 from pathlib import Path
@@ -39,7 +40,9 @@ from working_time import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
+PROCESSED_DIR = Path(
+    os.environ.get("WCT_PROCESSED_DIR", PROJECT_ROOT / "data" / "processed")
+)
 
 ORDERS_FILE = PROCESSED_DIR / "orders.csv"
 PACKING_FILE = PROCESSED_DIR / "packing.csv"

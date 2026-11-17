@@ -1,5 +1,6 @@
 from pathlib import Path
 import csv
+import os
 import random
 from datetime import datetime, timedelta
 
@@ -15,8 +16,9 @@ from capacity_queue import apply_hall_capacity
 # ============================================================
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
-PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
+PROCESSED_DIR = Path(
+    os.getenv("WCT_PROCESSED_DIR", PROJECT_ROOT / "data" / "processed")
+)
 
 ORDERS_FILE = PROCESSED_DIR / "orders.csv"
 ORDER_ITEMS_FILE = PROCESSED_DIR / "order_items.csv"
@@ -76,9 +78,7 @@ def read_csv(file_path):
     """
     Read CSV and return a list of dictionaries.
     """
-
     if not file_path.exists():
-
         raise FileNotFoundError(
             f"Required file not found: {file_path}"
         )
@@ -88,7 +88,6 @@ def read_csv(file_path):
         newline="",
         encoding="utf-8-sig",
     ) as file:
-
         return list(
             csv.DictReader(file)
         )
@@ -99,13 +98,11 @@ def read_csv(file_path):
 # ============================================================
 
 def load_orders():
-
     orders = read_csv(
         ORDERS_FILE
     )
 
     if not orders:
-
         raise ValueError(
             "Orders file is empty."
         )
@@ -122,7 +119,6 @@ def load_orders():
     )
 
     if missing:
-
         raise ValueError(
             f"Orders missing fields: {missing}"
         )
@@ -135,13 +131,11 @@ def load_orders():
 # ============================================================
 
 def load_order_items():
-
     items = read_csv(
         ORDER_ITEMS_FILE
     )
 
     if not items:
-
         raise ValueError(
             "Order items file is empty."
         )
@@ -159,7 +153,6 @@ def load_order_items():
     )
 
     if missing:
-
         raise ValueError(
             f"Order items missing fields: {missing}"
         )
@@ -172,13 +165,11 @@ def load_order_items():
 # ============================================================
 
 def load_inventory():
-
     inventory = read_csv(
         INVENTORY_FILE
     )
 
     if not inventory:
-
         raise ValueError(
             "Inventory file is empty."
         )
@@ -196,7 +187,6 @@ def load_inventory():
     )
 
     if missing:
-
         raise ValueError(
             f"Inventory missing fields: {missing}"
         )
@@ -209,13 +199,11 @@ def load_inventory():
 # ============================================================
 
 def load_locations():
-
     locations = read_csv(
         LOCATIONS_FILE
     )
 
     if not locations:
-
         raise ValueError(
             "Locations file is empty."
         )
@@ -237,7 +225,6 @@ def load_locations():
     )
 
     if missing:
-
         raise ValueError(
             f"Locations missing fields: {missing}"
         )
@@ -249,19 +236,14 @@ def load_locations():
 # INDEXES
 # ============================================================
 
-def build_location_index(
-    locations,
-):
-
+def build_location_index(locations):
     return {
         row["location_id"]: row
         for row in locations
     }
 
 
-def build_inventory_index(
-    inventory,
-):
+def build_inventory_index(inventory):
     """
     Build:
 
@@ -269,29 +251,19 @@ def build_inventory_index(
 
     A product may exist at multiple warehouse locations.
     """
-
     index = {}
 
     for row in inventory:
-
-        product_id = row[
-            "product_id"
-        ]
-
+        product_id = row["product_id"]
         index.setdefault(
             product_id,
             [],
-        ).append(
-            row
-        )
+        ).append(row)
 
     return index
 
 
-def build_order_index(
-    orders,
-):
-
+def build_order_index(orders):
     return {
         row["order_id"]: row
         for row in orders
@@ -302,23 +274,12 @@ def build_order_index(
 # TIMELINE HELPERS
 # ============================================================
 
-def parse_order_datetime(
-    order,
-):
-
+def parse_order_datetime(order):
     try:
-
         return datetime.fromisoformat(
-            order[
-                "order_datetime"
-            ]
+            order["order_datetime"]
         )
-
-    except (
-        KeyError,
-        ValueError,
-    ) as exc:
-
+    except (KeyError, ValueError) as exc:
         raise ValueError(
             "Invalid order_datetime for "
             f"{order.get('order_id', 'UNKNOWN')}"
@@ -349,27 +310,21 @@ def choose_container_type(
         smaller picks
         vertical lift / cart picking
     """
-
     if order_weight_kg >= 2000:
-
         return "PALLET"
 
     if picking_method in {
         "FORKLIFT",
         "STAPLER",
     }:
-
         return "PALLET"
 
     if picking_method in {
         "PICKING_CART",
         "VERTICAL_LIFT",
     }:
-
         if quantity <= 20:
-
             return "BOX"
-
         return "CART"
 
     return "BOX"
@@ -388,63 +343,27 @@ def choose_inventory_record(
     Choose a valid inventory location.
 
     IMPORTANT:
-
     This function does NOT modify inventory.
-
-    The inventory snapshot represents the warehouse state
-    used to determine where a product can be picked from.
-
-    Prefer a location with enough quantity.
-
-    Otherwise choose the location with the largest
-    reference quantity.
     """
-
     candidates = []
 
     for record in inventory_records:
+        location_id = record["location_id"]
 
-        location_id = record[
-            "location_id"
-        ]
-
-        if (
-            location_id
-            not in location_index
-        ):
-
+        if location_id not in location_index:
             continue
 
         try:
-
-            available = int(
-                float(
-                    record[
-                        "quantity"
-                    ]
-                )
-            )
-
-        except (
-            ValueError,
-            TypeError,
-        ):
-
+            available = int(float(record["quantity"]))
+        except (ValueError, TypeError):
             continue
 
         if available <= 0:
-
             continue
 
-        candidates.append(
-            (
-                record,
-                available,
-            )
-        )
+        candidates.append((record, available))
 
     if not candidates:
-
         return None
 
     sufficient = [
@@ -454,10 +373,7 @@ def choose_inventory_record(
     ]
 
     if sufficient:
-
-        return random.choice(
-            sufficient
-        )[0]
+        return random.choice(sufficient)[0]
 
     candidates.sort(
         key=lambda pair: pair[1],
@@ -479,30 +395,9 @@ def generate_picking(
 ):
     """
     Generate picking records.
-
-    One order item may generate multiple picking records when
-    the requested quantity is represented across multiple
-    inventory locations.
-
-    Inventory is NOT consumed globally because this dataset is
-    a historical simulation using the inventory snapshot as a
-    warehouse-location reference.
-
-    Picking timestamps are assigned per order after all picking
-    records for that order are known. This guarantees:
-
-        order_datetime
-            <= first pick
-            < subsequent picks
-            < requested_delivery_datetime
     """
-
     picking_records = []
     pick_number = PICK_ID_START
-
-    # --------------------------------------------------------
-    # Group order items by order.
-    # --------------------------------------------------------
 
     order_items_by_order = {}
 
@@ -512,12 +407,7 @@ def generate_picking(
             [],
         ).append(item)
 
-    # --------------------------------------------------------
-    # Process orders.
-    # --------------------------------------------------------
-
     for order_id, items in order_items_by_order.items():
-
         order = order_index.get(order_id)
 
         if order is None:
@@ -531,13 +421,9 @@ def generate_picking(
             requested_delivery_datetime = datetime.fromisoformat(
                 order["requested_delivery_datetime"]
             )
-        except (
-            KeyError,
-            ValueError,
-        ) as exc:
+        except (KeyError, ValueError) as exc:
             raise ValueError(
-                f"Invalid requested_delivery_datetime for "
-                f"{order_id}"
+                f"Invalid requested_delivery_datetime for {order_id}"
             ) from exc
 
         if requested_delivery_datetime <= order_datetime:
@@ -549,119 +435,91 @@ def generate_picking(
             )
 
         order_records = []
+        stock_remaining = {}
 
-        # ----------------------------------------------------
+        order_product_ids = {item["product_id"] for item in items}
+
+        for product_id in order_product_ids:
+            for record in inventory_index.get(product_id, []):
+                inventory_id = record.get("inventory_id")
+                try:
+                    raw_quantity = float(record.get("quantity", 0))
+                    if not raw_quantity.is_integer():
+                        raise ValueError
+                    qty = int(raw_quantity)
+                except (TypeError, ValueError):
+                    raise ValueError(
+                        f"Invalid inventory quantity for {inventory_id}: "
+                        f"{record.get('quantity')!r}"
+                    )
+                if qty < 0:
+                    raise ValueError(
+                        f"Negative opening inventory quantity for {inventory_id}."
+                    )
+                stock_remaining[inventory_id] = qty
+
         # Generate picking records without timestamps first.
-        # ----------------------------------------------------
-
         for item in items:
-
             product_id = item["product_id"]
-
-            requested_quantity = int(
-                item["requested_quantity"]
-            )
+            requested_quantity = int(item["requested_quantity"])
 
             if requested_quantity <= 0:
                 raise ValueError(
-                    f"Invalid requested quantity for "
-                    f"{item['order_item_id']}"
+                    f"Invalid requested quantity for {item['order_item_id']}"
                 )
 
             remaining_quantity = requested_quantity
-
-            records = inventory_index.get(
-                product_id,
-                [],
-            )
+            records = inventory_index.get(product_id, [])
 
             if not records:
                 raise ValueError(
-                    f"No inventory location found "
-                    f"for product {product_id}"
+                    f"No inventory location found for product {product_id}"
                 )
 
-            # Stock left per inventory record FOR THIS ITEM.
-            # The inventory file stays a static snapshot; this only
-            # stops one location from being picked again and again
-            # after its quantity is used up.
-            stock_left = {}
+            valid_records = [
+                record for record in records
+                if record.get("location_id") in location_index
+            ]
 
-            for record in records:
-                if record["location_id"] not in location_index:
-                    continue
-                try:
-                    stock_left[record["inventory_id"]] = int(
-                        float(record["quantity"])
-                    )
-                except (ValueError, TypeError):
-                    continue
-
-            used_inventory_ids = set()
+            if not valid_records:
+                raise ValueError(
+                    f"No valid inventory location found for product {product_id}"
+                )
 
             while remaining_quantity > 0:
-
                 available_records = [
-                    record
-                    for record in records
-                    if stock_left.get(
-                        record["inventory_id"],
-                        0,
-                    ) > 0
+                    record for record in valid_records
+                    if stock_remaining.get(record.get("inventory_id"), 0) > 0
                 ]
 
                 if not available_records:
-                    raise ValueError(
-                        f"No valid inventory location "
-                        f"available for product "
-                        f"{product_id}"
-                    )
+                    break
 
                 sufficient = [
-                    record
-                    for record in available_records
-                    if stock_left[
-                        record["inventory_id"]
-                    ] >= remaining_quantity
+                    record for record in available_records
+                    if stock_remaining[record["inventory_id"]] >= remaining_quantity
                 ]
 
                 if sufficient:
-
-                    record = random.choice(
-                        sufficient
-                    )
-
+                    record = random.choice(sufficient)
                 else:
-
                     record = max(
                         available_records,
-                        key=lambda row: stock_left[
-                            row["inventory_id"]
-                        ],
+                        key=lambda row: stock_remaining[row["inventory_id"]],
                     )
 
-                inventory_quantity = stock_left[
-                    record["inventory_id"]
-                ]
+                inventory_quantity = stock_remaining[record["inventory_id"]]
 
                 picked_quantity = min(
                     remaining_quantity,
                     inventory_quantity,
                 )
 
-                location = location_index[
-                    record["location_id"]
-                ]
-
-                picking_method = location[
-                    "picking_method"
-                ]
+                location = location_index[record["location_id"]]
+                picking_method = location["picking_method"]
 
                 item_total_weight = float(
-                    item.get(
-                        "total_weight_kg",
-                        0,
-                    )
+                    item.get("total_weight_kg", 0)
                 )
 
                 container_type = choose_container_type(
@@ -670,41 +528,24 @@ def generate_picking(
                     order_weight_kg=item_total_weight,
                 )
 
-                pick_id = (
-                    f"PICK-{pick_number:08d}"
-                )
-
+                pick_id = f"PICK-{pick_number:08d}"
                 pick_number += 1
 
                 order_records.append(
                     {
                         "picking_id": pick_id,
-                        "order_item_id": item[
-                            "order_item_id"
-                        ],
+                        "order_item_id": item["order_item_id"],
                         "order_id": order_id,
                         "product_id": product_id,
-                        "inventory_id": record[
-                            "inventory_id"
-                        ],
-                        "location_id": record[
-                            "location_id"
-                        ],
-                        "hall_id": location[
-                            "hall_id"
-                        ],
-                        "zone_nr": location[
-                            "zone_nr"
-                        ],
+                        "inventory_id": record["inventory_id"],
+                        "location_id": record["location_id"],
+                        "hall_id": location["hall_id"],
+                        "zone_nr": location["zone_nr"],
                         "picking_method": picking_method,
-                        "storage_type": location[
-                            "storage_type"
-                        ],
+                        "storage_type": location["storage_type"],
                         "picked_quantity": picked_quantity,
                         "container_type": container_type,
-                        "container_id": (
-                            f"{container_type}-{pick_id}"
-                        ),
+                        "container_id": f"{container_type}-{pick_id}",
                         "location_scan": True,
                         "container_scan": True,
                         "pick_status": "PICKED",
@@ -713,32 +554,20 @@ def generate_picking(
                 )
 
                 remaining_quantity -= picked_quantity
+                stock_remaining[record["inventory_id"]] -= picked_quantity
 
-                stock_left[
-                    record["inventory_id"]
-                ] -= picked_quantity
-
-                used_inventory_ids.add(
-                    record["inventory_id"]
-                )
+                if stock_remaining[record["inventory_id"]] < 0:
+                    raise AssertionError(
+                        f"Inventory became negative for {record['inventory_id']}."
+                    )
 
         if not order_records:
             raise ValueError(
                 f"No picking records generated for {order_id}"
             )
 
-        # ----------------------------------------------------
-        # Timeline.
-        #
-        # We create the whole order timeline only after all
-        # picking records are known. This fixes the previous
-        # situation where a long order could run past its
-        # delivery deadline.
-        # ----------------------------------------------------
-
-        record_count = len(
-            order_records
-        )
+        # Timeline calculation
+        record_count = len(order_records)
 
         total_window_seconds = (
             requested_delivery_datetime
@@ -747,26 +576,17 @@ def generate_picking(
 
         if total_window_seconds <= 0:
             raise ValueError(
-                f"Invalid operational window for "
-                f"{order_id}"
+                f"Invalid operational window for {order_id}"
             )
 
-        # Keep one minute of safety before delivery when possible.
         buffer_seconds = min(
             60,
-            max(
-                1,
-                int(
-                    total_window_seconds * 0.05
-                ),
-            ),
+            max(1, int(total_window_seconds * 0.05)),
         )
 
         latest_allowed_pick = (
             requested_delivery_datetime
-            - timedelta(
-                seconds=buffer_seconds
-            )
+            - timedelta(seconds=buffer_seconds)
         )
 
         usable_seconds = (
@@ -774,35 +594,10 @@ def generate_picking(
             - order_datetime
         ).total_seconds()
 
-        minimum_step_seconds = (
-            PICKING_STEP_MINUTES[0] * 60
-        )
-
-        # ----------------------------------------------------
-        # Timeline strategy
-        #
-        # The previous version required every pick transition
-        # to be at least 5 minutes. That is not always possible
-        # for an order with many picking records and a short
-        # delivery window.
-        #
-        # For a synthetic historical dataset, the correct
-        # solution is to compress the operational timeline:
-        #
-        #   normal order  ->  5-20 minute gaps
-        #   tight order   ->  evenly distributed gaps
-        #
-        # We only require strictly chronological timestamps.
-        # We never move picking before the order or after the
-        # delivery deadline.
-        # ----------------------------------------------------
+        minimum_step_seconds = PICKING_STEP_MINUTES[0] * 60
 
         if record_count == 1:
-
-            maximum_start_delay = max(
-                0,
-                int(usable_seconds),
-            )
+            maximum_start_delay = max(0, int(usable_seconds))
 
             start_delay_seconds = min(
                 random.randint(
@@ -814,44 +609,29 @@ def generate_picking(
 
             first_pick_datetime = (
                 order_datetime
-                + timedelta(
-                    seconds=start_delay_seconds
-                )
+                + timedelta(seconds=start_delay_seconds)
             )
 
-            timestamps = [
-                first_pick_datetime
-            ]
+            timestamps = [first_pick_datetime]
 
         else:
-
-            # Use the normal start delay only when enough time
-            # remains for normal 5-minute transitions.
             normal_start_delay = random.randint(
                 PICKING_START_DELAY_MINUTES[0] * 60,
                 PICKING_START_DELAY_MINUTES[1] * 60,
             )
 
             normal_required_seconds = (
-                (record_count - 1)
-                * minimum_step_seconds
+                (record_count - 1) * minimum_step_seconds
             )
 
             if usable_seconds >= (
-                normal_start_delay
-                + normal_required_seconds
+                normal_start_delay + normal_required_seconds
             ):
-
-                # Normal operational timeline.
-                start_delay_seconds = (
-                    normal_start_delay
-                )
+                start_delay_seconds = normal_start_delay
 
                 first_pick_datetime = (
                     order_datetime
-                    + timedelta(
-                        seconds=start_delay_seconds
-                    )
+                    + timedelta(seconds=start_delay_seconds)
                 )
 
                 available_for_steps = (
@@ -859,33 +639,20 @@ def generate_picking(
                     - first_pick_datetime
                 ).total_seconds()
 
-                timestamps = [
-                    first_pick_datetime
-                ]
+                timestamps = [first_pick_datetime]
+                remaining_seconds = available_for_steps
 
-                remaining_seconds = (
-                    available_for_steps
-                )
-
-                for index in range(
-                    1,
-                    record_count,
-                ):
-
+                for index in range(1, record_count):
                     picks_remaining_after_current = (
-                        record_count
-                        - index
-                        - 1
+                        record_count - index - 1
                     )
 
                     minimum_future_seconds = (
-                        picks_remaining_after_current
-                        * minimum_step_seconds
+                        picks_remaining_after_current * minimum_step_seconds
                     )
 
                     maximum_step_seconds = (
-                        remaining_seconds
-                        - minimum_future_seconds
+                        remaining_seconds - minimum_future_seconds
                     )
 
                     step_upper_bound = min(
@@ -895,47 +662,22 @@ def generate_picking(
 
                     step_seconds = random.randint(
                         minimum_step_seconds,
-                        max(
-                            minimum_step_seconds,
-                            int(step_upper_bound),
-                        ),
+                        max(minimum_step_seconds, int(step_upper_bound)),
                     )
 
                     timestamps.append(
-                        timestamps[-1]
-                        + timedelta(
-                            seconds=step_seconds
-                        )
+                        timestamps[-1] + timedelta(seconds=step_seconds)
                     )
 
-                    remaining_seconds -= (
-                        step_seconds
-                    )
+                    remaining_seconds -= step_seconds
 
             else:
-
-                # ------------------------------------------------
-                # Tight deadline.
-                #
-                # Spread all picks evenly between order creation
-                # and the latest safe picking timestamp.
-                #
-                # This is intentionally allowed to use intervals
-                # shorter than 5 minutes. Otherwise some valid
-                # orders could never be represented.
-                # ------------------------------------------------
-
                 first_pick_datetime = (
                     order_datetime
                     + timedelta(
                         seconds=min(
                             60,
-                            max(
-                                1,
-                                int(
-                                    usable_seconds * 0.05
-                                ),
-                            ),
+                            max(1, int(usable_seconds * 0.05)),
                         )
                     )
                 )
@@ -945,113 +687,65 @@ def generate_picking(
                     - first_pick_datetime
                 ).total_seconds()
 
-                if available_for_steps <= (
-                    record_count - 1
-                ):
+                if available_for_steps <= (record_count - 1):
                     raise ValueError(
                         f"Insufficient time even for a "
-                        f"compressed picking timeline for "
-                        f"{order_id}. "
+                        f"compressed picking timeline for {order_id}. "
                         f"Records={record_count}, "
-                        f"available_seconds="
-                        f"{available_for_steps:.0f}"
+                        f"available_seconds={available_for_steps:.0f}"
                     )
 
-                # Leave at least one second between picks.
                 step_seconds = (
-                    available_for_steps
-                    / (
-                        record_count - 1
-                    )
+                    available_for_steps / (record_count - 1)
                 )
 
                 timestamps = [
                     first_pick_datetime
-                    + timedelta(
-                        seconds=(
-                            index
-                            * step_seconds
-                        )
-                    )
-                    for index in range(
-                        record_count
-                    )
+                    + timedelta(seconds=(index * step_seconds))
+                    for index in range(record_count)
                 ]
 
-        # ----------------------------------------------------
-        # Final timestamp validation.
-        # ----------------------------------------------------
-
+        # Final timestamp validation
         previous_timestamp = None
 
-        for index, record in enumerate(
-            order_records
-        ):
+        for index, record in enumerate(order_records):
+            pick_datetime = timestamps[index]
 
-            pick_datetime = timestamps[
-                index
-            ]
-
-            if (
-                pick_datetime
-                < order_datetime
-            ):
+            if pick_datetime < order_datetime:
                 raise ValueError(
-                    f"Pick occurs before order creation "
-                    f"for {order_id}"
+                    f"Pick occurs before order creation for {order_id}"
                 )
 
             if (
                 previous_timestamp is not None
-                and pick_datetime
-                <= previous_timestamp
+                and pick_datetime <= previous_timestamp
             ):
                 raise ValueError(
-                    f"Picking timestamps are not strictly "
-                    f"chronological for {order_id}"
+                    f"Picking timestamps are not strictly chronological for {order_id}"
                 )
 
-            if (
-                pick_datetime
-                >= requested_delivery_datetime
-            ):
+            if pick_datetime >= requested_delivery_datetime:
                 raise ValueError(
                     f"Pick occurs at/after delivery deadline "
                     f"for {order_id}: "
                     f"pick={pick_datetime.isoformat()}, "
-                    f"deadline="
-                    f"{requested_delivery_datetime.isoformat()}"
+                    f"deadline={requested_delivery_datetime.isoformat()}"
                 )
 
-            record[
-                "pick_datetime"
-            ] = pick_datetime.isoformat(
+            record["pick_datetime"] = pick_datetime.isoformat(
                 timespec="seconds"
             )
 
-            previous_timestamp = (
-                pick_datetime
-            )
+            previous_timestamp = pick_datetime
 
-        picking_records.extend(
-            order_records
-        )
-
-        # ----------------------------------------------------
-        # Progress.
-        # ----------------------------------------------------
+        picking_records.extend(order_records)
 
         if (
             len(picking_records) // 5_000
-            > (
-                len(picking_records)
-                - len(order_records)
-            ) // 5_000
+            > (len(picking_records) - len(order_records)) // 5_000
         ):
             print(
-                f"  Generated "
-                f"{len(picking_records):,} "
-                f"picking records..."
+                f"  Generated {len(picking_records):,} picking records..."
             )
 
     return picking_records
@@ -1068,475 +762,208 @@ def validate_picking(
     inventory,
     location_index,
 ):
-    """
-    Validate picking records.
-
-    Every order item must be completely picked.
-    """
-
     if not picking_records:
-
-        raise ValueError(
-            "No picking records generated."
-        )
+        raise ValueError("No picking records generated.")
 
     order_item_lookup = {
-        row[
-            "order_item_id"
-        ]: row
+        row["order_item_id"]: row
         for row in order_items
     }
 
     order_lookup = {
-        row[
-            "order_id"
-        ]: row
+        row["order_id"]: row
         for row in orders
     }
 
     inventory_ids = {
-        row[
-            "inventory_id"
-        ]
+        row["inventory_id"]
         for row in inventory
     }
 
     picking_ids = [
-        row[
-            "picking_id"
-        ]
+        row["picking_id"]
         for row in picking_records
     ]
 
-    # --------------------------------------------------------
-    # Unique picking IDs.
-    # --------------------------------------------------------
-
-    assert len(
-        picking_ids
-    ) == len(
-        set(picking_ids)
-    ), (
+    assert len(picking_ids) == len(set(picking_ids)), (
         "Duplicate picking_id values."
     )
 
     picked_by_item = {}
-
     last_pick_datetime_by_order = {}
     picks_after_deadline = 0
 
-    # --------------------------------------------------------
-    # Validate every picking record.
-    # --------------------------------------------------------
-
     for pick in picking_records:
+        order_item_id = pick["order_item_id"]
+        order_id = pick["order_id"]
 
-        order_item_id = pick[
-            "order_item_id"
-        ]
-
-        order_id = pick[
-            "order_id"
-        ]
-
-        # ----------------------------------------------------
-        # References.
-        # ----------------------------------------------------
-
-        assert (
-            order_item_id
-            in order_item_lookup
-        ), (
-            f"Unknown order_item_id: "
-            f"{order_item_id}"
+        assert order_item_id in order_item_lookup, (
+            f"Unknown order_item_id: {order_item_id}"
         )
 
-        assert (
-            pick[
-                "inventory_id"
-            ]
-            in inventory_ids
-        ), (
-            f"Unknown inventory_id: "
-            f"{pick['inventory_id']}"
+        assert pick["inventory_id"] in inventory_ids, (
+            f"Unknown inventory_id: {pick['inventory_id']}"
         )
 
-        assert (
-            pick[
-                "location_id"
-            ]
-            in location_index
-        ), (
-            f"Unknown location_id: "
-            f"{pick['location_id']}"
+        assert pick["location_id"] in location_index, (
+            f"Unknown location_id: {pick['location_id']}"
         )
 
-        # ----------------------------------------------------
-        # Picking method.
-        # ----------------------------------------------------
-
-        assert (
-            pick[
-                "picking_method"
-            ]
-            in PICKING_METHODS
-        ), (
-            f"Invalid picking method: "
-            f"{pick['picking_method']}"
+        assert pick["picking_method"] in PICKING_METHODS, (
+            f"Invalid picking method: {pick['picking_method']}"
         )
 
-        # ----------------------------------------------------
-        # Container.
-        # ----------------------------------------------------
-
-        assert (
-            pick[
-                "container_type"
-            ]
-            in CONTAINER_TYPES
-        ), (
-            f"Invalid container type: "
-            f"{pick['container_type']}"
+        assert pick["container_type"] in CONTAINER_TYPES, (
+            f"Invalid container type: {pick['container_type']}"
         )
 
-        # ----------------------------------------------------
-        # Quantity.
-        # ----------------------------------------------------
-
-        assert (
-            int(
-                pick[
-                    "picked_quantity"
-                ]
-            ) > 0
-        ), (
-            f"Invalid picked quantity: "
-            f"{pick['picking_id']}"
+        assert int(pick["picked_quantity"]) > 0, (
+            f"Invalid picked quantity: {pick['picking_id']}"
         )
 
-        # ----------------------------------------------------
-        # Scans.
-        # ----------------------------------------------------
-
-        assert (
-            pick[
-                "location_scan"
-            ] is True
-        ), (
-            f"Location scan missing: "
-            f"{pick['picking_id']}"
+        assert pick["location_scan"] is True, (
+            f"Location scan missing: {pick['picking_id']}"
         )
 
-        assert (
-            pick[
-                "container_scan"
-            ] is True
-        ), (
-            f"Container scan missing: "
-            f"{pick['picking_id']}"
+        assert pick["container_scan"] is True, (
+            f"Container scan missing: {pick['picking_id']}"
         )
 
-        # ----------------------------------------------------
-        # Status.
-        # ----------------------------------------------------
-
-        assert (
-            pick[
-                "pick_status"
-            ]
-            in PICK_STATUSES
-        ), (
-            f"Invalid pick status: "
-            f"{pick['picking_id']}"
+        assert pick["pick_status"] in PICK_STATUSES, (
+            f"Invalid pick status: {pick['picking_id']}"
         )
-
-        # ----------------------------------------------------
-        # Timestamp.
-        # ----------------------------------------------------
 
         try:
-
-            pick_datetime = (
-                datetime.fromisoformat(
-                    pick[
-                        "pick_datetime"
-                    ]
-                )
-            )
-
-        except (
-            KeyError,
-            ValueError,
-        ) as exc:
-
+            pick_datetime = datetime.fromisoformat(pick["pick_datetime"])
+        except (KeyError, ValueError) as exc:
             raise ValueError(
-                f"Invalid pick_datetime for "
-                f"{pick['picking_id']}"
+                f"Invalid pick_datetime for {pick['picking_id']}"
             ) from exc
 
-        # ----------------------------------------------------
-        # Order reference.
-        # ----------------------------------------------------
+        order = order_lookup.get(order_id)
+        assert order is not None, f"Unknown order_id: {order_id}"
 
-        order = order_lookup.get(
-            order_id
+        order_datetime = datetime.fromisoformat(order["order_datetime"])
+        assert pick_datetime >= order_datetime, (
+            f"Pick occurs before order: {pick['picking_id']}"
         )
 
-        assert (
-            order is not None
-        ), (
-            f"Unknown order_id: "
-            f"{order_id}"
-        )
-
-        order_datetime = (
-            datetime.fromisoformat(
-                order[
-                    "order_datetime"
-                ]
-            )
-        )
-
-        # Pick must occur after order creation.
-        assert (
-            pick_datetime
-            >= order_datetime
-        ), (
-            f"Pick occurs before order: "
-            f"{pick['picking_id']}"
-        )
-
-        # Pick must also occur before the requested delivery
-        # deadline. Packing depends on this upstream guarantee.
         try:
             requested_delivery_datetime = datetime.fromisoformat(
                 order["requested_delivery_datetime"]
             )
-        except (
-            KeyError,
-            ValueError,
-        ) as exc:
+        except (KeyError, ValueError) as exc:
             raise ValueError(
-                f"Invalid requested_delivery_datetime for "
-                f"{order_id}"
+                f"Invalid requested_delivery_datetime for {order_id}"
             ) from exc
 
-        # Lateness is allowed (capacity backlog); only count it.
         if pick_datetime >= requested_delivery_datetime:
             picks_after_deadline += 1
 
-        # ----------------------------------------------------
-        # Chronological order picks.
-        # ----------------------------------------------------
-
-        previous_pick = (
-            last_pick_datetime_by_order.get(
-                order_id
-            )
-        )
-
+        previous_pick = last_pick_datetime_by_order.get(order_id)
         if previous_pick is not None:
-
-            assert (
-                pick_datetime
-                > previous_pick
-            ), (
-                "Picking timestamps are not "
-                "strictly chronological for "
-                f"order {order_id}"
+            assert pick_datetime > previous_pick, (
+                f"Picking timestamps are not strictly chronological for order {order_id}"
             )
 
-        last_pick_datetime_by_order[
-            order_id
-        ] = pick_datetime
+        last_pick_datetime_by_order[order_id] = pick_datetime
 
-        # ----------------------------------------------------
-        # Aggregate picked quantity.
-        # ----------------------------------------------------
-
-        picked_by_item[
-            order_item_id
-        ] = (
-            picked_by_item.get(
-                order_item_id,
-                0,
-            )
-            + int(
-                pick[
-                    "picked_quantity"
-                ]
-            )
+        picked_by_item[order_item_id] = (
+            picked_by_item.get(order_item_id, 0)
+            + int(pick["picked_quantity"])
         )
-
-    # ========================================================
-    # COMPLETE PICK VALIDATION
-    # ========================================================
 
     incomplete = 0
-
     for item in order_items:
+        requested = int(item["requested_quantity"])
+        picked = picked_by_item.get(item["order_item_id"], 0)
 
-        requested = int(
-            item[
-                "requested_quantity"
-            ]
-        )
+        if picked > requested:
+            raise ValueError(
+                f"Over-picking detected for {item['order_item_id']}: "
+                f"requested={requested}, picked={picked}"
+            )
 
-        picked = picked_by_item.get(
-            item[
-                "order_item_id"
-            ],
-            0,
-        )
-
-        if picked != requested:
-
+        if picked < requested:
             incomplete += 1
 
     print()
-    print(
-        f"Order items not fully picked: "
-        f"{incomplete:,}"
-    )
+    print(f"Order items not fully picked: {incomplete:,}")
 
     if incomplete > 0:
-
-        raise ValueError(
-            "Picking validation failed: "
-            f"{incomplete:,} order items "
-            "are not fully picked."
+        print(
+            "Some order items remain partially/unpicked; "
+            "they must wait for replenishment."
         )
 
-    print(
-        f"Picks after delivery deadline: "
-        f"{picks_after_deadline:,}"
-    )
+    opening_by_inventory = {
+        row["inventory_id"]: int(float(row["quantity"]))
+        for row in inventory
+    }
+    picked_by_order_inventory = {}
+    for pick in picking_records:
+        key = (pick["order_id"], pick["inventory_id"])
+        picked_by_order_inventory[key] = (
+            picked_by_order_inventory.get(key, 0)
+            + int(pick["picked_quantity"])
+        )
+    for (order_id, inv_id), picked_qty in picked_by_order_inventory.items():
+        opening_qty = opening_by_inventory.get(inv_id)
+        if opening_qty is None or picked_qty > opening_qty:
+            raise ValueError(
+                f"Stock conservation failed for order {order_id}, "
+                f"inventory {inv_id}: opening={opening_qty}, picked={picked_qty}"
+            )
 
-    print(
-        "Picking validation passed."
-    )
+    print(f"Picks after delivery deadline: {picks_after_deadline:,}")
+    print("Picking validation passed.")
 
 
 # ============================================================
 # SUMMARY
 # ============================================================
 
-def print_summary(
-    picking_records,
-):
-    """
-    Print picking summary.
-    """
-
-    total_picks = len(
-        picking_records
-    )
-
-    total_quantity = sum(
-        int(
-            row[
-                "picked_quantity"
-            ]
-        )
-        for row in picking_records
-    )
+def print_summary(picking_records):
+    total_picks = len(picking_records)
+    total_quantity = sum(int(row["picked_quantity"]) for row in picking_records)
 
     print()
     print("Warehouse Picking Summary")
     print("=========================")
-
-    print(
-        f"Picking records:       "
-        f"{total_picks:,}"
-    )
-
-    print(
-        f"Picked quantity:       "
-        f"{total_quantity:,}"
-    )
-
-    # --------------------------------------------------------
-    # Picking methods.
-    # --------------------------------------------------------
+    print(f"Picking records:       {total_picks:,}")
+    print(f"Picked quantity:       {total_quantity:,}")
 
     print()
     print("Picking Method")
     print("--------------")
 
     method_counts = {}
-
     for row in picking_records:
-
-        method = row[
-            "picking_method"
-        ]
-
-        method_counts[
-            method
-        ] = (
-            method_counts.get(
-                method,
-                0,
-            )
-            + 1
-        )
+        method = row["picking_method"]
+        method_counts[method] = method_counts.get(method, 0) + 1
 
     for method in PICKING_METHODS:
-
-        print(
-            f"{method:<18}"
-            f"{method_counts.get(method, 0):,}"
-        )
-
-    # --------------------------------------------------------
-    # Container types.
-    # --------------------------------------------------------
+        print(f"{method:<18}{method_counts.get(method, 0):,}")
 
     print()
     print("Container Type")
     print("--------------")
 
     container_counts = {}
-
     for row in picking_records:
-
-        container = row[
-            "container_type"
-        ]
-
-        container_counts[
-            container
-        ] = (
-            container_counts.get(
-                container,
-                0,
-            )
-            + 1
-        )
+        container = row["container_type"]
+        container_counts[container] = container_counts.get(container, 0) + 1
 
     for container in CONTAINER_TYPES:
-
-        print(
-            f"{container:<18}"
-            f"{container_counts.get(container, 0):,}"
-        )
+        print(f"{container:<18}{container_counts.get(container, 0):,}")
 
 
 # ============================================================
 # EXPORT
 # ============================================================
 
-def export_picking(
-    picking_records,
-):
-    """
-    Export picking records to CSV.
-    """
-
-    PROCESSED_DIR.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+def export_picking(picking_records):
+    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 
     fieldnames = [
         "picking_id",
@@ -1558,31 +985,14 @@ def export_picking(
         "pick_datetime",
     ]
 
-    with PICKING_FILE.open(
-        "w",
-        newline="",
-        encoding="utf-8",
-    ) as file:
-
-        writer = csv.DictWriter(
-            file,
-            fieldnames=fieldnames,
-        )
-
+    with PICKING_FILE.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
         writer.writeheader()
-
-        writer.writerows(
-            picking_records
-        )
+        writer.writerows(picking_records)
 
     print()
-    print(
-        "Picking export complete:"
-    )
-
-    print(
-        PICKING_FILE
-    )
+    print("Picking export complete:")
+    print(PICKING_FILE)
 
 
 # ============================================================
@@ -1590,125 +1000,44 @@ def export_picking(
 # ============================================================
 
 def main():
-
     print()
     print("Warehouse Picking Generator")
     print("===========================")
 
-    # --------------------------------------------------------
-    # Orders
-    # --------------------------------------------------------
-
-    print()
-    print("Loading orders...")
-
+    print("\nLoading orders...")
     orders = load_orders()
+    print(f"Orders loaded: {len(orders):,}")
 
-    print(
-        f"Orders loaded: "
-        f"{len(orders):,}"
-    )
-
-    # --------------------------------------------------------
-    # Order items
-    # --------------------------------------------------------
-
-    print()
-    print("Loading order items...")
-
+    print("\nLoading order items...")
     order_items = load_order_items()
+    print(f"Order items loaded: {len(order_items):,}")
 
-    print(
-        f"Order items loaded: "
-        f"{len(order_items):,}"
-    )
-
-    # --------------------------------------------------------
-    # Inventory
-    # --------------------------------------------------------
-
-    print()
-    print("Loading inventory...")
-
+    print("\nLoading inventory...")
     inventory = load_inventory()
+    print(f"Inventory records loaded: {len(inventory):,}")
 
-    print(
-        f"Inventory records loaded: "
-        f"{len(inventory):,}"
-    )
-
-    # --------------------------------------------------------
-    # Locations
-    # --------------------------------------------------------
-
-    print()
-    print("Loading locations...")
-
+    print("\nLoading locations...")
     locations = load_locations()
+    print(f"Locations loaded: {len(locations):,}")
 
-    print(
-        f"Locations loaded: "
-        f"{len(locations):,}"
-    )
+    print("\nBuilding indexes...")
+    order_index = build_order_index(orders)
+    inventory_index = build_inventory_index(inventory)
+    location_index = build_location_index(locations)
+    print(f"Products in inventory index: {len(inventory_index):,}")
 
-    # --------------------------------------------------------
-    # Indexes
-    # --------------------------------------------------------
-
-    print()
-    print("Building indexes...")
-
-    order_index = build_order_index(
-        orders
-    )
-
-    inventory_index = (
-        build_inventory_index(
-            inventory
-        )
-    )
-
-    location_index = (
-        build_location_index(
-            locations
-        )
-    )
-
-    print(
-        f"Products in inventory index: "
-        f"{len(inventory_index):,}"
-    )
-
-    # --------------------------------------------------------
-    # Picking
-    # --------------------------------------------------------
-
-    print()
-    print("Generating picking records...")
-
+    print("\nGenerating picking records...")
     picking_records = generate_picking(
         order_items=order_items,
         inventory_index=inventory_index,
         location_index=location_index,
         order_index=order_index,
     )
+    print(f"Picking records generated: {len(picking_records):,}")
 
-    print(
-        f"Picking records generated: "
-        f"{len(picking_records):,}"
-    )
+    picking_records = schedule_picks(picking_records, orders)
 
-    # --------------------------------------------------------
-    # Validation
-    # --------------------------------------------------------
-
-    picking_records = schedule_picks(
-        picking_records
-    )
-
-    print()
-    print("Validating picking...")
-
+    print("\nValidating picking...")
     validate_picking(
         picking_records=picking_records,
         orders=orders,
@@ -1717,79 +1046,59 @@ def main():
         location_index=location_index,
     )
 
-    # --------------------------------------------------------
-    # Summary
-    # --------------------------------------------------------
+    print_summary(picking_records)
+    export_picking(picking_records)
 
-    print_summary(
-        picking_records
-    )
-
-    # --------------------------------------------------------
-    # Export
-    # --------------------------------------------------------
-
-    export_picking(
-        picking_records
-    )
-
-    print()
-    print(
-        "Picking generation completed successfully."
-    )
+    print("\nPicking generation completed successfully.")
 
 
 # ============================================================
 # WORKING TIME + HALL CAPACITY
 # ============================================================
 
-def schedule_picks(picking_records):
+def schedule_picks(picking_records, orders):
     """
     Phase 2 of picking generation.
-
-    1. Move every pick into working time (shifts, working days).
-    2. Run all picks through the hourly hall capacity queue, so
-       an overloaded hall creates a backlog.
-
-    Picks may now finish after the requested delivery deadline;
-    that lateness is intentional and flows into shipping.
     """
-
     capacity_by_date = load_capacity_by_date()
 
-    by_order = {}
+    order_metadata = {}
+    for order in orders:
+        order_id = order.get("order_id")
+        deadline = order.get("requested_delivery_datetime")
+        if not order_id or not deadline:
+            raise ValueError(
+                f"Order is missing order_id or requested_delivery_datetime: {order}"
+            )
+        try:
+            parsed_deadline = datetime.fromisoformat(deadline)
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid requested_delivery_datetime for {order_id}: {deadline!r}"
+            ) from exc
+        order_metadata[order_id] = {
+            "deadline": parsed_deadline,
+            "priority": (order.get("delivery_priority") or "NORMAL").strip().upper(),
+        }
 
+    by_order = {}
     for record in picking_records:
-        by_order.setdefault(
-            record["order_id"],
-            [],
-        ).append(record)
+        by_order.setdefault(record["order_id"], []).append(record)
 
     for records in by_order.values():
         snapped = snap_timestamps(
-            [
-                datetime.fromisoformat(
-                    record["pick_datetime"]
-                )
-                for record in records
-            ],
+            [datetime.fromisoformat(record["pick_datetime"]) for record in records],
             capacity_by_date,
         )
-
         for record, timestamp in zip(records, snapped):
-            record["pick_datetime"] = timestamp.isoformat(
-                timespec="seconds"
-            )
+            record["pick_datetime"] = timestamp.isoformat(timespec="seconds")
 
     return apply_hall_capacity(
         picking_records,
         capacity_by_date,
+        order_metadata=order_metadata,
     )
 
-
-# ============================================================
-# ENTRY POINT
-# ============================================================
 
 if __name__ == "__main__":
     main()

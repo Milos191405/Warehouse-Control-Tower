@@ -16,6 +16,7 @@ Important:
 from pathlib import Path
 import csv
 import random
+import os
 from datetime import datetime
 
 
@@ -24,7 +25,7 @@ from datetime import datetime
 # ============================================================
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
+PROCESSED_DIR = Path(os.getenv("WCT_PROCESSED_DIR", PROJECT_ROOT / "data" / "processed"))
 
 PRODUCT_FILE = PROCESSED_DIR / "product_master.csv"
 LOCATIONS_FILE = PROCESSED_DIR / "locations.csv"
@@ -39,8 +40,13 @@ RANDOM_SEED = 42
 random.seed(RANDOM_SEED)
 
 TARGET_OCCUPANCY = 0.70
-
 INVENTORY_ID_START = 1
+
+if not 0 < TARGET_OCCUPANCY <= 1:
+    raise ValueError("TARGET_OCCUPANCY must be in the interval (0, 1].")
+
+if INVENTORY_ID_START < 1:
+    raise ValueError("INVENTORY_ID_START must be at least 1.")
 
 STATUS = "AVAILABLE"
 
@@ -228,9 +234,14 @@ def generate_inventory(
     unique products to occupied locations.
     """
 
-    target_count = int(
-        len(locations) * TARGET_OCCUPANCY
-    )
+    if not locations:
+        raise ValueError("Cannot generate inventory without locations.")
+    if not products:
+        raise ValueError("Cannot generate inventory without products.")
+
+    target_count = int(len(locations) * TARGET_OCCUPANCY)
+    if target_count < 1:
+        raise ValueError("TARGET_OCCUPANCY results in zero occupied locations.")
 
     pallet_locations = [
         row
@@ -370,9 +381,11 @@ def validate_inventory(
         for row in inventory
     ]
 
-    assert len(inventory_ids) == len(
-        set(inventory_ids)
-    ), "Duplicate inventory_id values."
+    assert len(inventory_ids) == len(set(inventory_ids)), "Duplicate inventory_id values."
+    assert all(value for value in inventory_ids), "Missing inventory_id values."
+
+    container_ids = [row["container_id"] for row in inventory]
+    assert len(container_ids) == len(set(container_ids)), "Duplicate container_id values."
 
     occupied_locations = [
         row["location_id"]
@@ -406,17 +419,24 @@ def validate_inventory(
         assert row["zone_nr"] == source_location["zone_nr"]
         assert row["picking_method"] == source_location["picking_method"]
 
-        quantity = int(float(row["quantity"]))
+        try:
+            quantity = int(row["quantity"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid quantity for {row['inventory_id']}: {row['quantity']}") from exc
 
-        assert quantity > 0
+        assert quantity > 0, f"Quantity must be positive for {row['inventory_id']}."
+        assert row["last_updated"] == INITIAL_STOCK_TIMESTAMP, f"Unexpected last_updated for {row['inventory_id']}."
 
         assert row["status"] == STATUS
 
         if row["storage_type"] == "PALLET_STORAGE":
             assert row["container_type"] == "PALLET"
-
         elif row["storage_type"] == "BOX_STORAGE":
             assert row["container_type"] == "BOX"
+        else:
+            raise ValueError(f"Invalid storage_type: {row['storage_type']}")
+
+        assert row["container_id"].startswith(row["container_type"] + "-INV-"), f"Invalid container_id: {row['container_id']}"
 
     assert len(inventory) > 0
 
@@ -481,10 +501,7 @@ def print_summary(
 def export_inventory(
     inventory,
 ):
-    PROCESSED_DIR.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 
     fieldnames = [
         "inventory_id",
