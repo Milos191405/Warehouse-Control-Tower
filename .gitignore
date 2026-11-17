@@ -1,0 +1,31 @@
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.cpython-*.pyc
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+.conda/
+
+# VS Code / IDE settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Generated data outputs & large CSVs (keep source reference if desired)
+data/processed/*.csv
+data/processed/diagnostics/
+data/bronze/*.csv
+
+# Environment / secrets 
+.env
+.env.*
