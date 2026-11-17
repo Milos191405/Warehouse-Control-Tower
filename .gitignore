@@ -29,3 +29,5 @@ data/bronze/*.csv
 # Environment / secrets 
 .env
 .env.*
+
+data/processed/*.zip
