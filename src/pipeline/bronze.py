@@ -10,6 +10,7 @@ DATASETS = [
     "product_master.csv",
     "locations.csv",
     "inventory.csv",
+    "customers.csv",
     "orders.csv",
     "order_items.csv",
     "picking.csv",
@@ -37,7 +38,10 @@ def is_key_column(column):
 
 
 def is_string_column(series):
-    return pd.api.types.is_object_dtype(series) or pd.api.types.is_string_dtype(series)
+    return (
+        pd.api.types.is_object_dtype(series)
+        or pd.api.types.is_string_dtype(series)
+    )
 
 
 def add_whitespace(value):
@@ -122,6 +126,7 @@ def inject_issues(df, rng):
             "packing_type", "packing_status", "picking_status",
             "picking_method", "storage_type", "container_type",
             "base_unit", "pack_type_1", "pack_type_2", "pack_type_3",
+            "customer_type", "status",
         ]
         if c in result.columns and not is_key_column(c)
         and is_string_column(result[c])
@@ -139,7 +144,10 @@ def inject_issues(df, rng):
                 result.at[idx, col] = new
                 counts["category_issues"] += 1
 
-    duplicate_count = min(max(1, int(len(result) * DUPLICATE_RATE)), len(result))
+    duplicate_count = min(
+        max(1, int(len(result) * DUPLICATE_RATE)),
+        len(result),
+    )
     selected = rng.sample(result.index.tolist(), duplicate_count)
     result = pd.concat([result, result.loc[selected]], ignore_index=True)
     counts["duplicate_rows"] = duplicate_count
@@ -183,7 +191,9 @@ def main():
     print(f"Seed:   {SEED}")
 
     if not PROCESSED_DIR.exists():
-        raise FileNotFoundError(f"Processed directory not found: {PROCESSED_DIR}")
+        raise FileNotFoundError(
+            f"Processed directory not found: {PROCESSED_DIR}"
+        )
 
     BRONZE_DIR.mkdir(parents=True, exist_ok=True)
     rng = random.Random(SEED)
