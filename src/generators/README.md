@@ -30,11 +30,11 @@ The latest validated simulation run produced **110,000 orders** (`2024`: 34,000;
 | Order Items (`order_items.csv`) | `259,425` | `40.5%` single-piece lines (`quantity = 1`)                   |
 | Picking (`picking.csv`)         | `261,053` | `0` hourly capacity violations                                |
 | Packing (`packing.csv`)         | `110,000` | `64,750` small, `28,210` large, `17,040` pallet shipments     |
-| Shipping (`shipping.csv`)       | `110,000` | **93.30%** on-time delivery (`102,633` on-time, `7,367` late) |
+| Shipping (`shipping.csv`)       | `110,000` | **93.28%** on-time delivery (`102,609` on-time, `7,391` late) |
 
 ## Project Structure
 
-```text
+````text
 Warehouse Control Tower/
 ├── data/
 │   ├── source/abb/          # Source ABB catalog spreadsheets
@@ -51,14 +51,13 @@ Warehouse Control Tower/
 ├── run_pipeline.py          # Master pipeline & validation runner
 ├── requirements.txt
 └── README.md
-```
 
 ## Running the Data Pipeline
 
 ```bash
 pip install -r requirements.txt
 python run_pipeline.py
-```
+````
 
 For full details on architecture, roadmap, KPIs, and data rules, see [documentation/complete_project_documentation.md](documentation/complete_project_documentation.md)[cite: 3].
 
