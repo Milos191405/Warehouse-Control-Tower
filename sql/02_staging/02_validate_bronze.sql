@@ -1,13 +1,18 @@
 -- ============================================================
 -- WAREHOUSE CONTROL TOWER
--- Bronze Layer Validation
+-- Bronze Layer Validation (All 10 Tables)
 -- ============================================================
 
 -- ------------------------------------------------------------
 -- 1. ROW COUNTS
 -- ------------------------------------------------------------
-
-SELECT 'product_master' AS table_name, COUNT(*) AS row_count
+SELECT 'calendar' AS table_name, COUNT(*) AS row_count
+FROM bronze.calendar
+UNION ALL
+SELECT 'customers', COUNT(*)
+FROM bronze.customers
+UNION ALL
+SELECT 'product_master', COUNT(*)
 FROM bronze.product_master
 UNION ALL
 SELECT 'locations', COUNT(*)
@@ -33,21 +38,34 @@ FROM bronze.shipping
 ORDER BY table_name;
 
 -- ------------------------------------------------------------
--- 2. MISSING VALUES
+-- 2. MISSING PRIMARY / FOREIGN KEYS (Expected: 0)
 -- ------------------------------------------------------------
-
 SELECT
-    'product_master' AS table_name,
+    'calendar' AS table_name,
     COUNT(*) FILTER (
+        WHERE
+            date IS NULL
+            OR TRIM(date) = ''
+    ) AS missing_pk,
+    0 AS missing_fk
+FROM bronze.calendar
+UNION ALL
+SELECT 'customers', COUNT(*) FILTER (
+        WHERE
+            customer_id IS NULL
+            OR TRIM(customer_id) = ''
+    ), 0
+FROM bronze.customers
+UNION ALL
+SELECT 'product_master', COUNT(*) FILTER (
         WHERE
             product_id IS NULL
             OR TRIM(product_id) = ''
-    ) AS missing_product_id,
-    COUNT(*) FILTER (
+    ), COUNT(*) FILTER (
         WHERE
             article_number IS NULL
             OR TRIM(article_number) = ''
-    ) AS missing_article_number
+    )
 FROM bronze.product_master
 UNION ALL
 SELECT 'locations', COUNT(*) FILTER (
@@ -128,39 +146,71 @@ SELECT 'shipping', COUNT(*) FILTER (
 FROM bronze.shipping;
 
 -- ------------------------------------------------------------
--- 3. WHITESPACE ISSUES
+-- 3. INJECTED DATA QUALITY ISSUES (Whitespace & Missing Non-Keys)
 -- ------------------------------------------------------------
-
-SELECT 'orders.order_id' AS field, COUNT(*) AS whitespace_issues
+SELECT
+    'orders.delivery_priority' AS field,
+    COUNT(*) FILTER (
+        WHERE
+            delivery_priority <> TRIM(delivery_priority)
+    ) AS whitespace_issues,
+    COUNT(*) FILTER (
+        WHERE
+            delivery_priority IS NULL
+            OR TRIM(delivery_priority) = ''
+    ) AS missing_values
 FROM bronze.orders
-WHERE
-    order_id <> TRIM(order_id)
 UNION ALL
-SELECT 'inventory.product_id', COUNT(*)
-FROM bronze.inventory
-WHERE
-    product_id <> TRIM(product_id)
+SELECT 'orders.order_datetime', COUNT(*) FILTER (
+        WHERE
+            order_datetime <> TRIM(order_datetime)
+    ), COUNT(*) FILTER (
+        WHERE
+            order_datetime IS NULL
+            OR TRIM(order_datetime) = ''
+    )
+FROM bronze.orders
 UNION ALL
-SELECT 'picking.order_id', COUNT(*)
-FROM bronze.picking
-WHERE
-    order_id <> TRIM(order_id)
+SELECT 'customers.customer_type', COUNT(*) FILTER (
+        WHERE
+            customer_type <> TRIM(customer_type)
+    ), COUNT(*) FILTER (
+        WHERE
+            customer_type IS NULL
+            OR TRIM(customer_type) = ''
+    )
+FROM bronze.customers
 UNION ALL
-SELECT 'packing.order_id', COUNT(*)
+SELECT 'packing.packing_type', COUNT(*) FILTER (
+        WHERE
+            packing_type <> TRIM(packing_type)
+    ), COUNT(*) FILTER (
+        WHERE
+            packing_type IS NULL
+            OR TRIM(packing_type) = ''
+    )
 FROM bronze.packing
-WHERE
-    order_id <> TRIM(order_id)
 UNION ALL
-SELECT 'shipping.order_id', COUNT(*)
-FROM bronze.shipping
-WHERE
-    order_id <> TRIM(order_id);
+SELECT 'shipping.carrier', COUNT(*) FILTER (
+        WHERE
+            carrier <> TRIM(carrier)
+    ), COUNT(*) FILTER (
+        WHERE
+            carrier IS NULL
+            OR TRIM(carrier) = ''
+    )
+FROM bronze.shipping;
 
 -- ------------------------------------------------------------
--- 4. DUPLICATE BUSINESS KEYS
+-- 4. DUPLICATE BUSINESS KEYS (Expected: ~0.5% except calendar = 0)
 -- ------------------------------------------------------------
-
-SELECT 'product_master.product_id' AS field, COUNT(*) - COUNT(DISTINCT product_id) AS duplicate_rows
+SELECT 'calendar.date' AS field, COUNT(*) - COUNT(DISTINCT date) AS duplicate_rows
+FROM bronze.calendar
+UNION ALL
+SELECT 'customers.customer_id', COUNT(*) - COUNT(DISTINCT customer_id)
+FROM bronze.customers
+UNION ALL
+SELECT 'product_master.product_id', COUNT(*) - COUNT(DISTINCT product_id)
 FROM bronze.product_master
 UNION ALL
 SELECT 'locations.location_id', COUNT(*) - COUNT(DISTINCT location_id)
@@ -185,9 +235,8 @@ SELECT 'shipping.shipment_id', COUNT(*) - COUNT(DISTINCT shipment_id)
 FROM bronze.shipping;
 
 -- ------------------------------------------------------------
--- 5. CATEGORY / STATUS VALUES
+-- 5. CATEGORY / CASING ANOMALIES (Sample)
 -- ------------------------------------------------------------
-
 SELECT
     'orders.delivery_priority' AS field,
     delivery_priority AS value,
@@ -197,20 +246,14 @@ GROUP BY
     delivery_priority
 ORDER BY row_count DESC;
 
-SELECT 'inventory.storage_type' AS field, storage_type AS value, COUNT(*) AS row_count
-FROM bronze.inventory
-GROUP BY
-    storage_type
-ORDER BY row_count DESC;
-
-SELECT 'inventory.picking_method' AS field, picking_method AS value, COUNT(*) AS row_count
-FROM bronze.inventory
-GROUP BY
-    picking_method
-ORDER BY row_count DESC;
-
-SELECT 'shipping.shipping_method' AS field, shipping_method AS value, COUNT(*) AS row_count
+SELECT 'shipping.carrier' AS field, carrier AS value, COUNT(*) AS row_count
 FROM bronze.shipping
 GROUP BY
-    shipping_method
+    carrier
 ORDER BY row_count DESC;
+
+SELECT
+    current_database () AS db,
+    current_user AS usr,
+    inet_server_port () AS port,
+    version() AS pg_version;

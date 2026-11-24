@@ -1,30 +1,68 @@
 -- ============================================================
 -- WAREHOUSE CONTROL TOWER
--- Silver Layer - Create Tables
+-- Silver Layer - Create Tables (All 10 Tables with PK & FK)
 -- ============================================================
 
-DROP TABLE IF EXISTS silver.product_master CASCADE;
-
-DROP TABLE IF EXISTS silver.locations CASCADE;
-
-DROP TABLE IF EXISTS silver.inventory CASCADE;
-
-DROP TABLE IF EXISTS silver.orders CASCADE;
-
-DROP TABLE IF EXISTS silver.order_items CASCADE;
-
-DROP TABLE IF EXISTS silver.picking CASCADE;
+DROP TABLE IF EXISTS silver.shipping CASCADE;
 
 DROP TABLE IF EXISTS silver.packing CASCADE;
 
-DROP TABLE IF EXISTS silver.shipping CASCADE;
+DROP TABLE IF EXISTS silver.picking CASCADE;
+
+DROP TABLE IF EXISTS silver.order_items CASCADE;
+
+DROP TABLE IF EXISTS silver.orders CASCADE;
+
+DROP TABLE IF EXISTS silver.inventory CASCADE;
+
+DROP TABLE IF EXISTS silver.locations CASCADE;
+
+DROP TABLE IF EXISTS silver.product_master CASCADE;
+
+DROP TABLE IF EXISTS silver.customers CASCADE;
+
+DROP TABLE IF EXISTS silver.calendar CASCADE;
+
+-- ============================================================
+-- CALENDAR
+-- ============================================================
+
+CREATE TABLE silver.calendar (
+    date DATE PRIMARY KEY,
+    year INTEGER,
+    month INTEGER,
+    week INTEGER,
+    weekday TEXT,
+    is_weekend BOOLEAN,
+    is_public_holiday BOOLEAN,
+    holiday_name TEXT,
+    is_school_holiday BOOLEAN,
+    school_holiday_name TEXT,
+    is_school_free_day BOOLEAN,
+    school_free_day_name TEXT,
+    is_vacation_period BOOLEAN,
+    season TEXT,
+    demand_multiplier NUMERIC,
+    warehouse_capacity_multiplier NUMERIC,
+    is_buffer_period BOOLEAN
+);
+
+-- ============================================================
+-- CUSTOMERS
+-- ============================================================
+
+CREATE TABLE silver.customers (
+    customer_id TEXT PRIMARY KEY,
+    customer_type TEXT,
+    status TEXT
+);
 
 -- ============================================================
 -- PRODUCT MASTER
 -- ============================================================
 
 CREATE TABLE silver.product_master (
-    product_id TEXT,
+    product_id TEXT PRIMARY KEY,
     article_number TEXT,
     ean TEXT,
     type TEXT,
@@ -54,7 +92,7 @@ CREATE TABLE silver.product_master (
 -- ============================================================
 
 CREATE TABLE silver.locations (
-    location_id TEXT,
+    location_id TEXT PRIMARY KEY,
     hall_id TEXT,
     zone_nr INTEGER,
     storage_type TEXT,
@@ -69,9 +107,9 @@ CREATE TABLE silver.locations (
 -- ============================================================
 
 CREATE TABLE silver.inventory (
-    inventory_id TEXT,
-    product_id TEXT,
-    location_id TEXT,
+    inventory_id TEXT PRIMARY KEY,
+    product_id TEXT REFERENCES silver.product_master (product_id),
+    location_id TEXT REFERENCES silver.locations (location_id),
     hall_id TEXT,
     zone_nr INTEGER,
     storage_type TEXT,
@@ -88,13 +126,13 @@ CREATE TABLE silver.inventory (
 -- ============================================================
 
 CREATE TABLE silver.orders (
-    order_id TEXT,
-    customer_id TEXT,
+    order_id TEXT PRIMARY KEY,
+    customer_id TEXT REFERENCES silver.customers (customer_id),
     order_datetime TIMESTAMP,
-    requested_delivery_datetime TIMESTAMP,
-    delivery_priority TEXT,
     order_status TEXT,
+    delivery_priority TEXT,
     order_weight_class TEXT,
+    requested_delivery_datetime TIMESTAMP,
     total_items INTEGER,
     total_weight_kg NUMERIC
 );
@@ -104,10 +142,10 @@ CREATE TABLE silver.orders (
 -- ============================================================
 
 CREATE TABLE silver.order_items (
-    order_item_id TEXT,
-    order_id TEXT,
+    order_item_id TEXT PRIMARY KEY,
+    order_id TEXT REFERENCES silver.orders (order_id),
     line_number INTEGER,
-    product_id TEXT,
+    product_id TEXT REFERENCES silver.product_master (product_id),
     requested_quantity INTEGER,
     unit_weight_kg NUMERIC,
     weight_source TEXT,
@@ -123,12 +161,12 @@ CREATE TABLE silver.order_items (
 -- ============================================================
 
 CREATE TABLE silver.picking (
-    picking_id TEXT,
-    order_item_id TEXT,
-    order_id TEXT,
-    product_id TEXT,
-    inventory_id TEXT,
-    location_id TEXT,
+    picking_id TEXT PRIMARY KEY,
+    order_item_id TEXT REFERENCES silver.order_items (order_item_id),
+    order_id TEXT REFERENCES silver.orders (order_id),
+    product_id TEXT REFERENCES silver.product_master (product_id),
+    inventory_id TEXT REFERENCES silver.inventory (inventory_id),
+    location_id TEXT REFERENCES silver.locations (location_id),
     hall_id TEXT,
     zone_nr INTEGER,
     picking_method TEXT,
@@ -147,11 +185,14 @@ CREATE TABLE silver.picking (
 -- ============================================================
 
 CREATE TABLE silver.packing (
-    packing_id TEXT,
-    order_id TEXT,
+    packing_id TEXT PRIMARY KEY,
+    order_id TEXT REFERENCES silver.orders (order_id),
     packing_type TEXT,
     packing_area TEXT,
     packing_station TEXT,
+    station_capacity_factor NUMERIC,
+    package_type TEXT,
+    workload_units NUMERIC,
     container_id TEXT,
     container_type TEXT,
     container_count INTEGER,
@@ -162,10 +203,7 @@ CREATE TABLE silver.packing (
     order_complete BOOLEAN,
     packing_status TEXT,
     packing_started_at TIMESTAMP,
-    packing_completed_at TIMESTAMP,
-    station_capacity_factor NUMERIC,
-    package_type TEXT,
-    workload_units NUMERIC
+    packing_completed_at TIMESTAMP
 );
 
 -- ============================================================
@@ -173,9 +211,9 @@ CREATE TABLE silver.packing (
 -- ============================================================
 
 CREATE TABLE silver.shipping (
-    shipment_id TEXT,
-    order_id TEXT,
-    packing_id TEXT,
+    shipment_id TEXT PRIMARY KEY,
+    order_id TEXT REFERENCES silver.orders (order_id),
+    packing_id TEXT REFERENCES silver.packing (packing_id),
     package_type TEXT,
     shipping_method TEXT,
     transport_mode TEXT,

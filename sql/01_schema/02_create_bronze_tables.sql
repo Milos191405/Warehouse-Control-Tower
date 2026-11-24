@@ -1,23 +1,61 @@
 -- ============================================================
 -- WAREHOUSE CONTROL TOWER
--- Recreate Bronze Layer Tables
+-- Create / Recreate Bronze Layer Tables (All TEXT for Raw Ingestion)
 -- ============================================================
 
-DROP TABLE IF EXISTS bronze.product_master CASCADE;
-
-DROP TABLE IF EXISTS bronze.locations CASCADE;
-
-DROP TABLE IF EXISTS bronze.inventory CASCADE;
-
-DROP TABLE IF EXISTS bronze.orders CASCADE;
-
-DROP TABLE IF EXISTS bronze.order_items CASCADE;
-
-DROP TABLE IF EXISTS bronze.picking CASCADE;
+DROP TABLE IF EXISTS bronze.shipping CASCADE;
 
 DROP TABLE IF EXISTS bronze.packing CASCADE;
 
-DROP TABLE IF EXISTS bronze.shipping CASCADE;
+DROP TABLE IF EXISTS bronze.picking CASCADE;
+
+DROP TABLE IF EXISTS bronze.order_items CASCADE;
+
+DROP TABLE IF EXISTS bronze.orders CASCADE;
+
+DROP TABLE IF EXISTS bronze.inventory CASCADE;
+
+DROP TABLE IF EXISTS bronze.locations CASCADE;
+
+DROP TABLE IF EXISTS bronze.product_master CASCADE;
+
+DROP TABLE IF EXISTS bronze.customers CASCADE;
+
+DROP TABLE IF EXISTS bronze.calendar CASCADE;
+
+-- ============================================================
+-- CALENDAR (from data/processed/calendar.csv)
+-- ============================================================
+
+CREATE TABLE bronze.calendar (
+    date TEXT,
+    year TEXT,
+    month TEXT,
+    week TEXT,
+    weekday TEXT,
+    is_weekend TEXT,
+    is_public_holiday TEXT,
+    holiday_name TEXT,
+    is_school_holiday TEXT,
+    school_holiday_name TEXT,
+    is_school_free_day TEXT,
+    school_free_day_name TEXT,
+    is_vacation_period TEXT,
+    season TEXT,
+    demand_multiplier TEXT,
+    warehouse_capacity_multiplier TEXT,
+    is_buffer_period TEXT
+);
+
+-- ============================================================
+-- CUSTOMERS
+-- ============================================================
+
+CREATE TABLE bronze.customers (
+    customer_id TEXT,
+    customer_type TEXT,
+    status TEXT
+);
 
 -- ============================================================
 -- PRODUCT MASTER
@@ -91,10 +129,10 @@ CREATE TABLE bronze.orders (
     order_id TEXT,
     customer_id TEXT,
     order_datetime TEXT,
-    requested_delivery_datetime TEXT,
-    delivery_priority TEXT,
     order_status TEXT,
+    delivery_priority TEXT,
     order_weight_class TEXT,
+    requested_delivery_datetime TEXT,
     total_items TEXT,
     total_weight_kg TEXT
 );
@@ -152,6 +190,9 @@ CREATE TABLE bronze.packing (
     packing_type TEXT,
     packing_area TEXT,
     packing_station TEXT,
+    station_capacity_factor TEXT,
+    package_type TEXT,
+    workload_units TEXT,
     container_id TEXT,
     container_type TEXT,
     container_count TEXT,
@@ -162,10 +203,7 @@ CREATE TABLE bronze.packing (
     order_complete TEXT,
     packing_status TEXT,
     packing_started_at TEXT,
-    packing_completed_at TEXT,
-    station_capacity_factor TEXT,
-    package_type TEXT,
-    workload_units TEXT
+    packing_completed_at TEXT
 );
 
 -- ============================================================
