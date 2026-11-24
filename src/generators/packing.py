@@ -6,7 +6,9 @@ from datetime import datetime, timedelta
 
 from working_time import (
     add_working_duration,
+    is_open,
     load_capacity_by_date,
+    next_working_datetime,
 )
 
 
@@ -448,22 +450,67 @@ def generate_packing_timeline(
 
     start_delay_minutes = random.randint(*PACKING_START_DELAY_MINUTES)
 
-    packing_started_at = add_working_duration(
-        latest_pick_datetime,
-        timedelta(minutes=start_delay_minutes),
+    # The order is READY for packing after the last pick plus a short
+    # hand-over delay. next_working_datetime() also guarantees that the
+    # moment is not inside a shift break (add_working_duration() can end
+    # exactly where a break starts).
+    packing_ready_at = next_working_datetime(
+        add_working_duration(
+            latest_pick_datetime,
+            timedelta(minutes=start_delay_minutes),
+            capacity_by_date,
+        ),
         capacity_by_date,
     )
 
-    packing_completed_at = add_working_duration(
-        packing_started_at,
-        timedelta(seconds=duration_seconds),
-        capacity_by_date,
+    return packing_ready_at, timedelta(seconds=duration_seconds)
+
+
+# ============================================================
+# STATION QUEUE
+# ============================================================
+
+def schedule_packing(packing_records, durations, capacity_by_date):
+    """
+    Phase 2 of packing: every station packs ONE order at a time.
+
+    Orders are served in the order they become ready. If the assigned
+    station is still busy, the order waits for it. Working time
+    (shifts, breaks, nights, weekends, holidays) never counts as
+    packing time.
+
+    packing_records come with the READY time in packing_started_at
+    (provisional); durations maps packing_id -> timedelta.
+    Modifies packing_started_at / packing_completed_at in place.
+    """
+
+    jobs = sorted(
+        packing_records,
+        key=lambda row: (row["packing_started_at"], row["packing_id"]),
     )
 
-    if packing_completed_at <= packing_started_at:
-        raise ValueError("Packing completion must be strictly after packing start.")
+    station_free_at = {}
 
-    return packing_started_at, packing_completed_at
+    for row in jobs:
+        ready_at = datetime.fromisoformat(row["packing_started_at"])
+        station = row["packing_station"]
+
+        started_at = next_working_datetime(
+            max(ready_at, station_free_at.get(station, ready_at)),
+            capacity_by_date,
+        )
+        completed_at = add_working_duration(
+            started_at,
+            durations[row["packing_id"]],
+            capacity_by_date,
+        )
+
+        station_free_at[station] = completed_at
+
+        row["packing_started_at"] = started_at.isoformat(timespec="seconds")
+        row["packing_completed_at"] = completed_at.isoformat(timespec="seconds")
+
+    return packing_records
 
 
 # ============================================================
@@ -478,6 +525,7 @@ def generate_packing_records(orders, order_items, picking):
     capacity_by_date = load_capacity_by_date()
 
     packing_records = []
+    durations = {}
     packing_id = PACKING_ID_START
 
     for order_id, order in order_index.items():
@@ -547,7 +595,7 @@ def generate_packing_records(orders, order_items, picking):
             datetime.fromisoformat(pick["pick_datetime"]) for pick in picks
         )
 
-        packing_started_at, packing_completed_at = generate_packing_timeline(
+        packing_ready_at, packing_duration = generate_packing_timeline(
             latest_pick_datetime=latest_pick_datetime,
             packing_type=packing_type,
             article_count=article_count,
@@ -577,10 +625,13 @@ def generate_packing_records(orders, order_items, picking):
                 "container_scan": "TRUE",
                 "order_complete": "TRUE",
                 "packing_status": "PACKED",
-                "packing_started_at": packing_started_at.isoformat(timespec="seconds"),
-                "packing_completed_at": packing_completed_at.isoformat(timespec="seconds"),
+                # Provisional: READY time. schedule_packing() sets the
+                # real start (station free) and completion afterwards.
+                "packing_started_at": packing_ready_at.isoformat(timespec="seconds"),
+                "packing_completed_at": packing_ready_at.isoformat(timespec="seconds"),
             }
         )
+        durations[f"PACK-{packing_id:06d}"] = packing_duration
 
         packing_id += 1
 
@@ -590,7 +641,7 @@ def generate_packing_records(orders, order_items, picking):
                 f"{len(orders):,} packing records..."
             )
 
-    return packing_records
+    return schedule_packing(packing_records, durations, capacity_by_date)
 
 
 # ============================================================
@@ -670,6 +721,9 @@ def validate_packing(packing_records, orders, order_items, picking):
         packing_started_at = datetime.fromisoformat(row["packing_started_at"])
         packing_completed_at = datetime.fromisoformat(row["packing_completed_at"])
         assert packing_completed_at > packing_started_at
+        assert is_open(packing_started_at), (
+            f"Packing starts outside working time for {order_id}"
+        )
 
         latest_pick_datetime = latest_pick_index[order_id]
         assert packing_started_at >= latest_pick_datetime
@@ -681,6 +735,24 @@ def validate_packing(packing_records, orders, order_items, picking):
             packed_after_deadline += 1
 
         assert order_id in picking_index and len(picking_index[order_id]) > 0
+
+    # One order at a time per station.
+    previous_end = {}
+    overlaps = 0
+
+    for row in sorted(
+        packing_records,
+        key=lambda r: (r["packing_station"], r["packing_started_at"]),
+    ):
+        station = row["packing_station"]
+        started = datetime.fromisoformat(row["packing_started_at"])
+
+        if station in previous_end and started < previous_end[station]:
+            overlaps += 1
+
+        previous_end[station] = datetime.fromisoformat(row["packing_completed_at"])
+
+    assert overlaps == 0, f"{overlaps:,} packing jobs overlap on a station."
 
     print(f"Orders packed at/after delivery deadline: {packed_after_deadline:,}")
     print("Packing validation passed.")

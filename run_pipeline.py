@@ -24,47 +24,57 @@ PROCESSED_DIR = Path(
 PIPELINE_STEPS = [
     (
         "business_calendar.py",
-        "Step 1/9: Generating Baden-Württemberg Business Calendar",
+        "Step 1/11: Generating Baden-Württemberg Business Calendar",
         ["calendar.csv"],
     ),
     (
         "location.py",
-        "Step 2/9: Generating 3-Hall Warehouse Storage Locations (24,180 positions)",
+        "Step 2/11: Generating 3-Hall Warehouse Storage Locations (24,180 positions)",
         ["locations.csv"],
     ),
     (
         "products.py",
-        "Step 3/9: Standardizing ABB Product Master Data",
+        "Step 3/11: Standardizing ABB Product Master Data",
         ["product_master.csv"],
     ),
     (
         "inventory.py",
-        "Step 4/9: Generating Opening Warehouse Inventory Snapshot",
+        "Step 4/11: Generating Opening Warehouse Inventory Snapshot",
         ["inventory.csv"],
     ),
     (
         "orders.py",
-        "Step 5/9: Generating Customers, Orders & Order Line Items",
+        "Step 5/11: Generating Customers, Orders & Order Line Items",
         ["customers.csv", "orders.csv", "order_items.csv"],
     ),
     (
         "picking.py",
-        "Step 6/9: Simulating Warehouse Picking & Hall Capacity Queue",
+        "Step 6/11: Simulating Warehouse Picking & Hall Capacity Queue",
         ["picking.csv"],
     ),
     (
         "packing.py",
-        "Step 7/9: Simulating Packing Stations & Package Classification",
+        "Step 7/11: Simulating Packing Stations & Package Classification",
         ["packing.csv"],
     ),
     (
         "shipping.py",
-        "Step 8/9: Simulating Dispatch, Transit & Delivery Performance",
+        "Step 8/11: Simulating Dispatch, Transit & Delivery Performance",
         ["shipping.csv"],
     ),
     (
+        "finalize_order_items.py",
+        "Step 9/11: Finalizing Order Items (picked / packed / shipped quantity & status)",
+        [],
+    ),
+    (
         "validation.py",
-        "Step 9/9: Running Cross-Dataset Referential & Business Logic Validation",
+        "Step 10/11: Running Cross-Dataset Referential & Business Logic Validation",
+        [],
+    ),
+    (
+        "check_generator_output.py",
+        "Step 11/11: Independent Cross-File Consistency Checks (keys, timing, capacity)",
         [],
     ),
 ]
