@@ -31,3 +31,6 @@ data/bronze/*.csv
 .env.*
 
 data/processed/*.zip
+
+# Power BI UI mockups (local design references)
+powerbi/mockups/
