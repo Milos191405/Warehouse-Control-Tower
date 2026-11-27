@@ -138,7 +138,7 @@ SELECT
     s.shipped_at,
     s.delivered_at,
 
--- Statusi i atributi
+-- Status and attributes
 COALESCE(
     o.delivery_priority,
     s.delivery_priority,
@@ -166,7 +166,7 @@ COALESCE(
 ) AS destination_region,
 COALESCE(s.shipment_status, 'UNKNOWN') AS shipment_status,
 
--- Količine i opterećenje
+-- Quantities and workload
 o.total_items,
 o.total_weight_kg,
 p.pick_tasks_count,
@@ -175,7 +175,7 @@ pk.container_count,
 pk.workload_units,
 pk.station_capacity_factor,
 
--- Cycle time metrike (sati / minuti)
+-- Cycle time metrics (hours / minutes)
 ROUND(
     EXTRACT(
         EPOCH
